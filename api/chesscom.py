@@ -88,6 +88,9 @@ class ChessComClient(BaseChessClient):
             # Parse PGN to get final FEN
             final_fen = self._get_final_fen(data.get("pgn", ""))
 
+            # Parse opening from eco URL
+            opening_name, opening_eco = self._parse_opening(data)
+
             return GameData(
                 game_id=data.get("uuid", str(end_time)),
                 platform=self.PLATFORM,
@@ -102,10 +105,61 @@ class ChessComClient(BaseChessClient):
                 played_at=played_at,
                 game_url=data.get("url", ""),
                 final_fen=final_fen,
+                opening_name=opening_name,
+                opening_eco=opening_eco,
             )
         except Exception as e:
             logger.error(f"Error parsing Chess.com game: {e}")
             return None
+
+    def _parse_opening(self, data: dict) -> tuple[Optional[str], Optional[str]]:
+        """
+        Parse opening info from Chess.com game data.
+
+        Chess.com provides an 'eco' field with a URL like:
+        https://www.chess.com/openings/Sicilian-Defense-Open-2...Nf6-3.d4
+
+        Returns:
+            Tuple of (opening_name, eco_code)
+        """
+        eco_url = data.get("eco")
+        if not eco_url:
+            return None, None
+
+        try:
+            # Extract opening name from URL path
+            # URL format: https://www.chess.com/openings/Opening-Name-Variation...
+            path = eco_url.split("/openings/")[-1] if "/openings/" in eco_url else ""
+            if not path:
+                return None, None
+
+            # Convert URL path to readable name
+            # "Sicilian-Defense-Open-2...Nf6" -> "Sicilian Defense"
+            # Take only the main opening name (before move numbers or long variations)
+            parts = path.split("-")
+
+            # Find where the variation/moves start (contains numbers or is too long)
+            name_parts = []
+            for part in parts:
+                # Stop at move numbers like "2...Nf6" or "3.d4"
+                if any(c.isdigit() for c in part) and ("." in part or len(part) > 10):
+                    break
+                name_parts.append(part)
+
+            # Limit to reasonable opening name length
+            if len(name_parts) > 5:
+                name_parts = name_parts[:5]
+
+            opening_name = " ".join(name_parts) if name_parts else None
+
+            # ECO code is not directly available from the URL
+            # We could parse from PGN headers if needed, but for now return None
+            opening_eco = None
+
+            return opening_name, opening_eco
+        except Exception as e:
+            logger.error(f"Error parsing opening from {eco_url}: {e}")
+            return None, None
 
     def _parse_result(self, result_str: str) -> str:
         """Convert Chess.com result string to standardized result."""
@@ -190,3 +244,51 @@ class ChessComClient(BaseChessClient):
                     return game.get("pgn")
 
         return None
+
+    async def get_games_for_analysis(
+        self, username: str, max_games: int = 1000
+    ) -> list[GameData]:
+        """
+        Fetch a large number of games for analysis.
+
+        Fetches multiple monthly archives to collect up to max_games.
+
+        Args:
+            username: The player's username
+            max_games: Maximum number of games to fetch (default 1000)
+
+        Returns:
+            List of GameData, sorted by played_at (newest first)
+        """
+        username = username.lower()
+        games = []
+
+        # Get archives list
+        archives_url = f"{self.base_url}/player/{username}/games/archives"
+        archives_data = await self._get(archives_url)
+
+        if not archives_data or "archives" not in archives_data:
+            return games
+
+        # Process archives from most recent to oldest
+        for archive_url in reversed(archives_data["archives"]):
+            if len(games) >= max_games:
+                break
+
+            data = await self._get(archive_url)
+            if not data or "games" not in data:
+                continue
+
+            for game_data in reversed(data["games"]):  # Newest first within month
+                if len(games) >= max_games:
+                    break
+
+                try:
+                    game = self._parse_game(username, game_data)
+                    if game:
+                        games.append(game)
+                except Exception as e:
+                    logger.error(f"Error parsing game for analysis: {e}")
+                    continue
+
+        return games

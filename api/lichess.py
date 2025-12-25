@@ -41,7 +41,7 @@ class LichessClient(BaseChessClient):
 
         # Build URL with parameters
         url = f"{self.base_url}/games/user/{username}"
-        params = ["max=30", "pgnInJson=false", "lastFen=true"]
+        params = ["max=30", "pgnInJson=false", "lastFen=true", "opening=true"]
 
         if since:
             # Lichess uses milliseconds
@@ -134,6 +134,11 @@ class LichessClient(BaseChessClient):
             # Get final FEN (requires lastFen=true in request)
             final_fen = data.get("lastFen")
 
+            # Parse opening info (requires opening=true in request)
+            opening_data = data.get("opening", {})
+            opening_name = opening_data.get("name") if opening_data else None
+            opening_eco = opening_data.get("eco") if opening_data else None
+
             return GameData(
                 game_id=game_id,
                 platform=self.PLATFORM,
@@ -148,6 +153,8 @@ class LichessClient(BaseChessClient):
                 played_at=played_at,
                 game_url=f"https://lichess.org/{game_id}",
                 final_fen=final_fen,
+                opening_name=opening_name,
+                opening_eco=opening_eco,
             )
         except Exception as e:
             logger.error(f"Error parsing Lichess game: {e}")
@@ -186,3 +193,61 @@ class LichessClient(BaseChessClient):
         except Exception as e:
             logger.error(f"Error fetching Lichess game PGN: {e}")
             return None
+
+    async def get_games_for_analysis(
+        self, username: str, max_games: int = 1000
+    ) -> list[GameData]:
+        """
+        Fetch a large number of games for analysis.
+
+        Args:
+            username: The player's username
+            max_games: Maximum number of games to fetch (default 1000)
+
+        Returns:
+            List of GameData, sorted by played_at (newest first)
+        """
+        games = []
+
+        # Build URL with parameters for bulk fetch
+        url = f"{self.base_url}/games/user/{username}"
+        params = [
+            f"max={max_games}",
+            "pgnInJson=false",
+            "lastFen=true",
+            "opening=true",
+        ]
+
+        url = f"{url}?{'&'.join(params)}"
+
+        await self._ensure_session()
+        await self._rate_limit_wait()
+
+        try:
+            headers = self._get_headers()
+            headers["Accept"] = "application/x-ndjson"
+
+            async with self.session.get(url, headers=headers) as response:
+                if response.status != 200:
+                    logger.error(f"Lichess API error: {response.status}")
+                    return games
+
+                # Lichess returns newline-delimited JSON
+                async for line in response.content:
+                    line = line.decode("utf-8").strip()
+                    if not line:
+                        continue
+
+                    try:
+                        game_data = json.loads(line)
+                        game = self._parse_game(username, game_data)
+                        if game:
+                            games.append(game)
+                    except Exception as e:
+                        logger.error(f"Error parsing game for analysis: {e}")
+                        continue
+
+        except Exception as e:
+            logger.error(f"Error fetching Lichess games for analysis: {e}")
+
+        return games

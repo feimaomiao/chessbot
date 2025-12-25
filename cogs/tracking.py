@@ -9,6 +9,7 @@ from discord.ext import commands
 from config import Platform
 from database import DatabaseManager, TrackedPlayer
 from services.tracker import GameTracker
+from services.analysis import analyze_games, AnalysisResult
 from utils.board import get_board_discord_file
 from utils.helpers import format_platform_name, format_rating_change, get_time_control_emoji
 from utils.video import generate_game_video_async
@@ -319,7 +320,7 @@ class TrackingCog(commands.Cog):
         platform: PlatformChoice,
         username: str,
     ):
-        """Show the last 5 games for a tracked player."""
+        """Show the last 5 games for a tracked player with video replays."""
         await interaction.response.defer()
 
         # Find the player
@@ -347,13 +348,90 @@ class TrackingCog(commands.Cog):
 
         # Send header message
         await interaction.followup.send(
-            f"**Recent Games for {display_name}** ({platform_name}) - Last {len(games)} games:"
+            f"**Recent Games for {display_name}** ({platform_name}) - Last {len(games)} games:\n"
+            f"Generating video replays... This may take a moment."
         )
 
-        # Send each game as a separate message with board image (oldest to newest)
+        # Send each game as a separate message with video (oldest to newest)
         for game in reversed(games):
+            # Fetch PGN from API
+            pgn = None
+            if platform == "lichess":
+                pgn = await self.tracker.lichess_client.get_game_pgn(game.game_id)
+            else:
+                pgn = await self.tracker.chesscom_client.get_game_pgn(
+                    username, game.game_id
+                )
+
+            if pgn:
+                # Generate video
+                video_bytes = await generate_game_video_async(pgn)
+
+                if video_bytes:
+                    # Create embed with game info
+                    embed = self._create_history_embed(player, game)
+                    video_file = discord.File(
+                        io.BytesIO(video_bytes),
+                        filename=f"{display_name}_{game.game_id}.mp4",
+                    )
+                    await interaction.followup.send(embed=embed, file=video_file)
+                    continue
+
+            # Fallback to static board image if video generation fails
             embed, file = self._create_game_embed(player, game)
             await interaction.followup.send(embed=embed, file=file)
+
+    def _create_history_embed(self, player: TrackedPlayer, game) -> discord.Embed:
+        """Create an embed for game history (without board image, for use with video)."""
+        display_name = player.display_name or player.username
+
+        # Determine white and black players
+        if game.player_color == "white":
+            white_name = display_name
+            white_rating = game.rating_after
+            black_name = game.opponent
+            black_rating = game.opponent_rating
+        else:
+            white_name = game.opponent
+            white_rating = game.opponent_rating
+            black_name = display_name
+            black_rating = game.rating_after
+
+        # Title format: White (Rating) vs Black (Rating)
+        title = f"{white_name} ({white_rating}) vs {black_name} ({black_rating})"
+
+        # Color based on result
+        if game.result == "win":
+            embed_color = discord.Color.green()
+        elif game.result == "loss":
+            embed_color = discord.Color.red()
+        else:
+            embed_color = discord.Color.greyple()
+
+        # Time control formatting
+        tc_emoji = get_time_control_emoji(game.time_control)
+
+        # Rating change formatting
+        rating_change_str = format_rating_change(game.rating_change)
+
+        # Timestamp
+        time_str = game.played_at.strftime("%b %d, %Y at %H:%M UTC") if game.played_at else "Unknown"
+
+        # Create embed
+        embed = discord.Embed(
+            title=title,
+            color=embed_color,
+            url=game.game_url,
+        )
+
+        # Game info in description
+        embed.description = (
+            f"**Format:** {tc_emoji} {game.time_control.capitalize()} ({game.time_control_display})\n"
+            f"**Rating:** {game.rating_after} ({rating_change_str})\n"
+            f"**Played:** {time_str}"
+        )
+
+        return embed
 
     @app_commands.command(name="video", description="Generate a video replay of a game")
     @app_commands.describe(
@@ -440,6 +518,146 @@ class TrackingCog(commands.Cog):
             f"**{display_name}** vs **{game.opponent}** ({game.time_control_display})",
             file=video_file,
         )
+
+    @app_commands.command(name="analyze", description="Analyze a player's recent games and openings")
+    @app_commands.describe(
+        platform="The chess platform",
+        username="The player's username",
+    )
+    async def analyze(
+        self,
+        interaction: discord.Interaction,
+        platform: PlatformChoice,
+        username: str,
+    ):
+        """Analyze a player's recent games for opening stats and performance."""
+        await interaction.response.defer()
+
+        # Find the player
+        player = await self.db.get_tracked_player(
+            interaction.guild_id, platform, username
+        )
+
+        if not player:
+            await interaction.followup.send(
+                f"`{username}` is not being tracked. Use `/track` first.",
+            )
+            return
+
+        # Send initial status message
+        await interaction.followup.send(
+            f"Fetching games for **{username}**... This may take a moment."
+        )
+
+        # Fetch games from API
+        if platform == "lichess":
+            games = await self.tracker.lichess_client.get_games_for_analysis(username)
+        else:
+            games = await self.tracker.chesscom_client.get_games_for_analysis(username)
+
+        if not games:
+            await interaction.followup.send(
+                f"No games found for **{username}** on {format_platform_name(platform)}."
+            )
+            return
+
+        # Run analysis
+        result = analyze_games(games)
+
+        # Create and send embed
+        embed = self._create_analysis_embed(player, platform, result)
+        await interaction.followup.send(embed=embed)
+
+    def _create_analysis_embed(
+        self,
+        player: TrackedPlayer,
+        platform: str,
+        result: AnalysisResult
+    ) -> discord.Embed:
+        """Create a Discord embed for analysis results."""
+        display_name = player.display_name or player.username
+        platform_name = format_platform_name(platform)
+
+        # Date range formatting
+        if result.date_range_start and result.date_range_end:
+            date_range = (
+                f"{result.date_range_start.strftime('%b %Y')} - "
+                f"{result.date_range_end.strftime('%b %Y')}"
+            )
+        else:
+            date_range = "N/A"
+
+        embed = discord.Embed(
+            title=f"Account Analysis: {display_name}",
+            description=(
+                f"**Platform:** {platform_name} | "
+                f"**Games:** {result.total_games} | "
+                f"**Period:** {date_range}"
+            ),
+            color=discord.Color.blue(),
+        )
+
+        # Rating progression
+        if result.starting_rating > 0:
+            change = result.rating_change
+            change_str = f"+{change}" if change > 0 else str(change)
+            embed.add_field(
+                name="Rating Progression",
+                value=(
+                    f"{result.starting_rating} -> {result.ending_rating} ({change_str})\n"
+                    f"High: {result.rating_high} | Low: {result.rating_low}"
+                ),
+                inline=False,
+            )
+
+        # Performance by color
+        if result.white_games > 0 or result.black_games > 0:
+            white_total = result.white_games
+            white_wr = f"{result.white_win_rate:.0f}%" if white_total > 0 else "N/A"
+            white_ld = f"{result.white_losses}L/{result.white_draws}D" if white_total > 0 else ""
+
+            black_total = result.black_games
+            black_wr = f"{result.black_win_rate:.0f}%" if black_total > 0 else "N/A"
+            black_ld = f"{result.black_losses}L/{result.black_draws}D" if black_total > 0 else ""
+
+            embed.add_field(
+                name="Performance by Color",
+                value=(
+                    f"White: {white_total} games ({white_wr} win, {white_ld})\n"
+                    f"Black: {black_total} games ({black_wr} win, {black_ld})"
+                ),
+                inline=False,
+            )
+
+        # Top openings as white
+        if result.top_openings_white:
+            lines = []
+            for i, opening in enumerate(result.top_openings_white[:5], 1):
+                eco = f"({opening.eco})" if opening.eco else ""
+                lines.append(
+                    f"{i}. {opening.name} {eco} - {opening.games} games, {opening.win_rate:.0f}% win"
+                )
+            embed.add_field(
+                name="Top Openings as White",
+                value="\n".join(lines),
+                inline=False,
+            )
+
+        # Top openings as black
+        if result.top_openings_black:
+            lines = []
+            for i, opening in enumerate(result.top_openings_black[:5], 1):
+                eco = f"({opening.eco})" if opening.eco else ""
+                lines.append(
+                    f"{i}. {opening.name} {eco} - {opening.games} games, {opening.win_rate:.0f}% win"
+                )
+            embed.add_field(
+                name="Top Openings as Black",
+                value="\n".join(lines),
+                inline=False,
+            )
+
+        return embed
 
     def _create_game_embed(self, player: TrackedPlayer, game) -> tuple[discord.Embed, discord.File | None]:
         """Create an embed and board image for a game."""

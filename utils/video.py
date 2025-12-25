@@ -18,6 +18,24 @@ from PIL import Image, ImageDraw
 
 logger = logging.getLogger(__name__)
 
+# Monkey-patch the stockfish library to fix __del__ error when initialization fails
+try:
+    from stockfish import Stockfish as _OriginalStockfish
+
+    _original_del = _OriginalStockfish.__del__
+
+    def _safe_del(self):
+        """Safe destructor that handles missing _stockfish attribute."""
+        if hasattr(self, "_stockfish"):
+            try:
+                _original_del(self)
+            except Exception:
+                pass
+
+    _OriginalStockfish.__del__ = _safe_del
+except ImportError:
+    pass
+
 # Piece values for material-based evaluation (fallback)
 PIECE_VALUES = {
     chess.PAWN: 100,
@@ -130,21 +148,31 @@ class StockfishEvaluator:
         # Find Stockfish binary
         stockfish_path = path or os.environ.get("STOCKFISH_PATH")
 
+        def try_init_engine(engine_path: str) -> bool:
+            """Try to initialize engine at given path. Returns True on success."""
+            try:
+                self.engine = Stockfish(path=engine_path, depth=self.depth)
+                # Try to set turn perspective (might not exist in older versions)
+                try:
+                    self.engine.set_turn_perspective(False)
+                    self._turn_perspective_supported = True
+                    logger.info(f"Stockfish initialized at: {engine_path} (turn_perspective=False)")
+                except AttributeError:
+                    self._turn_perspective_supported = False
+                    logger.info(f"Stockfish initialized at: {engine_path} (turn_perspective not supported)")
+                return True
+            except Exception as e:
+                logger.debug(f"Failed to init Stockfish at {engine_path}: {e}")
+                return False
+
         if not stockfish_path:
             for candidate in STOCKFISH_PATHS:
-                try:
-                    self.engine = Stockfish(path=candidate, depth=self.depth)
-                    logger.info(f"Stockfish initialized at: {candidate}")
+                if try_init_engine(candidate):
                     return
-                except Exception:
-                    continue
 
         if stockfish_path:
-            try:
-                self.engine = Stockfish(path=stockfish_path, depth=self.depth)
-                logger.info(f"Stockfish initialized at: {stockfish_path}")
-            except Exception as e:
-                logger.warning(f"Failed to initialize Stockfish at {stockfish_path}: {e}")
+            if try_init_engine(stockfish_path):
+                return
 
         if not self.engine:
             logger.warning(
@@ -170,6 +198,16 @@ class StockfishEvaluator:
             Evaluation in centipawns from white's perspective.
             Returns ±10000 for mate positions.
         """
+        # Handle game-over positions directly (Stockfish can't evaluate these)
+        if board.is_checkmate():
+            # The side to move is checkmated
+            if board.turn == chess.WHITE:
+                return -10000  # White is checkmated, black wins
+            else:
+                return 10000  # Black is checkmated, white wins
+        elif board.is_stalemate() or board.is_insufficient_material() or board.is_game_over():
+            return 0  # Draw or game over
+
         if not self.engine:
             return calculate_material_eval(board)
 
@@ -192,11 +230,23 @@ class StockfishEvaluator:
                 # Mate in N moves - return large value
                 mate_moves = evaluation["value"]
                 if mate_moves > 0:
-                    result = 10000 - mate_moves  # White winning
+                    result = 10000 - abs(mate_moves)  # Side to move has mate
                 else:
-                    result = -10000 - mate_moves  # Black winning
+                    result = -10000 + abs(mate_moves)  # Side to move getting mated
             else:
                 result = 0.0
+
+            # If turn_perspective is not supported, manually convert to White's perspective
+            # Stockfish returns from side-to-move's perspective by default
+            original_result = result
+            if not getattr(self, '_turn_perspective_supported', False):
+                if board.turn == chess.BLACK:
+                    result = -result
+
+            logger.debug(
+                f"Eval: {evaluation} | turn={('W' if board.turn else 'B')} | "
+                f"raw={original_result} | adjusted={result}"
+            )
 
             # Store in cache
             if use_cache:
@@ -240,6 +290,9 @@ class StockfishEvaluator:
         cache = get_eval_cache()
         results = [0.0] * len(positions)
 
+        # Check if turn perspective is supported from main evaluator
+        turn_perspective_supported = getattr(self, '_turn_perspective_supported', False)
+
         # First pass: check cache and collect uncached positions
         uncached_tasks = []
         for i, board in enumerate(positions):
@@ -248,7 +301,7 @@ class StockfishEvaluator:
             if cached is not None:
                 results[i] = cached
             else:
-                uncached_tasks.append((i, board, fen))
+                uncached_tasks.append((i, board, fen, turn_perspective_supported))
 
         # If all cached, return early
         if not uncached_tasks:
@@ -264,7 +317,7 @@ class StockfishEvaluator:
             from stockfish import Stockfish
         except ImportError:
             # Fall back to sequential evaluation for uncached
-            for idx, board, fen in uncached_tasks:
+            for idx, board, fen, _ in uncached_tasks:
                 result = calculate_material_eval(board)
                 results[idx] = result
                 cache.set(fen, result)
@@ -273,27 +326,52 @@ class StockfishEvaluator:
         # Find the stockfish path that works
         stockfish_path = None
         for candidate in STOCKFISH_PATHS:
+            test_engine = None
             try:
                 test_engine = Stockfish(path=candidate, depth=self.depth)
                 stockfish_path = candidate
-                del test_engine
                 break
             except Exception:
                 continue
+            finally:
+                if test_engine is not None:
+                    try:
+                        test_engine.send_quit_command()
+                    except Exception:
+                        pass
 
         if not stockfish_path:
             # Fall back to sequential evaluation for uncached
-            for idx, board, fen in uncached_tasks:
+            for idx, board, fen, _ in uncached_tasks:
                 result = calculate_material_eval(board)
                 results[idx] = result
                 cache.set(fen, result)
             return results
 
-        def evaluate_single(args: tuple[int, chess.Board, str]) -> tuple[int, float, str]:
+        def evaluate_single(args: tuple[int, chess.Board, str, bool]) -> tuple[int, float, str]:
             """Evaluate a single position with its own Stockfish instance."""
-            idx, board, fen = args
+            idx, board, fen, turn_perspective_supported = args
+
+            # Handle game-over positions directly (Stockfish can't evaluate these)
+            if board.is_checkmate():
+                # The side to move is checkmated
+                if board.turn == chess.WHITE:
+                    return (idx, -10000, fen)  # White is checkmated, black wins
+                else:
+                    return (idx, 10000, fen)  # Black is checkmated, white wins
+            elif board.is_stalemate() or board.is_insufficient_material() or board.is_game_over():
+                return (idx, 0, fen)  # Draw or game over
+
+            engine = None
             try:
                 engine = Stockfish(path=stockfish_path, depth=self.depth)
+                # Try to set turn perspective if supported
+                if turn_perspective_supported:
+                    try:
+                        engine.set_turn_perspective(False)
+                    except AttributeError:
+                        pass
+
                 engine.set_fen_position(fen)
                 evaluation = engine.get_evaluation()
 
@@ -302,17 +380,28 @@ class StockfishEvaluator:
                 elif evaluation["type"] == "mate":
                     mate_moves = evaluation["value"]
                     if mate_moves > 0:
-                        result = 10000 - mate_moves
+                        result = 10000 - abs(mate_moves)  # Side to move has mate
                     else:
-                        result = -10000 - mate_moves
+                        result = -10000 + abs(mate_moves)  # Side to move getting mated
                 else:
                     result = 0.0
 
-                del engine
+                # If turn_perspective is not supported, manually convert to White's perspective
+                if not turn_perspective_supported:
+                    if board.turn == chess.BLACK:
+                        result = -result
+
                 return (idx, result, fen)
             except Exception as e:
                 logger.debug(f"Parallel eval error for position {idx}: {e}")
                 return (idx, calculate_material_eval(board), fen)
+            finally:
+                # Properly clean up the engine to avoid __del__ errors
+                if engine is not None:
+                    try:
+                        engine.send_quit_command()
+                    except Exception:
+                        pass
 
         # Use ThreadPoolExecutor for parallel evaluation
         # Limit workers to avoid spawning too many Stockfish processes
@@ -336,7 +425,7 @@ class StockfishEvaluator:
         """Clean up the Stockfish engine."""
         if self.engine:
             try:
-                del self.engine
+                self.engine.send_quit_command()
             except Exception as e:
                 logger.debug(f"Error closing Stockfish engine: {e}")
             self.engine = None
@@ -362,6 +451,16 @@ def calculate_material_eval(board: chess.Board) -> float:
         Evaluation in centipawns from white's perspective.
         Positive = white advantage, negative = black advantage.
     """
+    # Handle game-over positions
+    if board.is_checkmate():
+        # The side to move is checkmated
+        if board.turn == chess.WHITE:
+            return -10000  # White is checkmated, black wins
+        else:
+            return 10000  # Black is checkmated, white wins
+    elif board.is_stalemate() or board.is_insufficient_material():
+        return 0  # Draw
+
     eval_score = 0
 
     for piece_type in PIECE_VALUES:
@@ -376,8 +475,20 @@ def eval_to_win_probability(centipawns: float) -> float:
     """
     Convert centipawn evaluation to win probability (0-1).
     Uses a sigmoid-like function.
+
+    Args:
+        centipawns: Evaluation from white's perspective (positive = white winning)
+
+    Returns:
+        Win probability for white (1.0 = white winning, 0.0 = black winning)
     """
-    # Clamp to reasonable range
+    # Handle mate scores - show as complete win for the mating side
+    if centipawns >= 9900:
+        return 1.0  # White has mate
+    elif centipawns <= -9900:
+        return 0.0  # Black has mate
+
+    # Clamp to reasonable range for sigmoid
     centipawns = max(-1500, min(1500, centipawns))
     # Sigmoid transformation
     return 1 / (1 + 10 ** (-centipawns / 400))
@@ -462,6 +573,10 @@ def render_eval_bar(
     img = Image.new("RGB", (width, height), color="#404040")
     draw = ImageDraw.Draw(img)
 
+    # Check for mate positions
+    is_white_mate = eval_score >= 9900
+    is_black_mate = eval_score <= -9900
+
     # Convert to win probability
     win_prob = eval_to_win_probability(eval_score)
 
@@ -475,28 +590,47 @@ def render_eval_bar(
     # Draw white section (bottom)
     draw.rectangle([0, white_height, width, height], fill="#f0f0f0")
 
-    # Draw center line
-    center_y = height // 2
-    draw.line([(0, center_y), (width, center_y)], fill="#808080", width=1)
+    # Draw center line (only if not a mate position)
+    if not is_white_mate and not is_black_mate:
+        center_y = height // 2
+        draw.line([(0, center_y), (width, center_y)], fill="#808080", width=1)
 
     # Draw evaluation text
     eval_text = format_eval_text(eval_score)
 
-    # Position text in the larger section for visibility
-    # Use contrasting color based on background
-    if win_prob > 0.5:
-        # More white (bottom), draw in white section
+    # For mate positions, use the winning player's color for text
+    # Position in the opposite section with outline for visibility
+    if is_white_mate:
+        # White has mate - show white text in black section (top) for visibility
+        text_y = 5
+        text_color = "#f0f0f0"  # White text
+        outline_color = "#1a1a1a"  # Dark outline
+    elif is_black_mate:
+        # Black has mate - show black text in white section (bottom) for visibility
+        text_y = height - 15
+        text_color = "#1a1a1a"  # Black text
+        outline_color = "#f0f0f0"  # Light outline
+    elif win_prob > 0.5:
+        # White winning - draw in white section (bottom) with dark text
         text_y = height - 15
         text_color = "#1a1a1a"
+        outline_color = None
     else:
-        # More black (top), draw in black section
+        # Black winning - draw in black section (top) with light text
         text_y = 5
         text_color = "#f0f0f0"
+        outline_color = None
 
     # Center text horizontally
     bbox = draw.textbbox((0, 0), eval_text)
     text_width = bbox[2] - bbox[0]
     text_x = (width - text_width) // 2
+
+    # Draw text with optional outline for mate positions
+    if outline_color:
+        # Draw outline by drawing text in outline color offset in all directions
+        for dx, dy in [(-1, -1), (-1, 1), (1, -1), (1, 1), (-1, 0), (1, 0), (0, -1), (0, 1)]:
+            draw.text((text_x + dx, text_y + dy), eval_text, fill=outline_color)
 
     draw.text((text_x, text_y), eval_text, fill=text_color)
 

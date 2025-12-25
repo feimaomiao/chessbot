@@ -26,6 +26,8 @@ class GameData:
     played_at: datetime
     game_url: str
     final_fen: Optional[str] = None  # Final board position
+    opening_name: Optional[str] = None  # Opening name (e.g., "Sicilian Defense")
+    opening_eco: Optional[str] = None  # ECO code (e.g., "B20")
 
 
 class BaseChessClient(ABC):
