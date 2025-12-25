@@ -95,6 +95,7 @@ async def fetch_pgns_from_db(max_games: int = 5) -> list[str]:
 def benchmark(
     name: str,
     func: Callable[[], None],
+    num_positions: int,
     iterations: int = 3,
 ) -> dict:
     """
@@ -103,6 +104,7 @@ def benchmark(
     Args:
         name: Name of the benchmark
         func: Function to benchmark
+        num_positions: Number of positions/moves being processed
         iterations: Number of iterations to run
 
     Returns:
@@ -117,13 +119,15 @@ def benchmark(
         times.append(elapsed)
         print(f"  Run {i + 1}/{iterations}: {elapsed:.3f}s")
 
+    mean_time = statistics.mean(times)
     return {
         "name": name,
         "iterations": iterations,
         "min": min(times),
         "max": max(times),
-        "mean": statistics.mean(times),
+        "mean": mean_time,
         "stdev": statistics.stdev(times) if len(times) > 1 else 0,
+        "per_move": (mean_time / num_positions) * 1000,  # ms per move
     }
 
 
@@ -161,6 +165,8 @@ def run_benchmarks(pgns: list[str]):
     print("EVALUATION BENCHMARKS (parallel)")
     print("-" * 60)
 
+    num_positions = len(boards)
+
     # Evaluation (uncached)
     print("\n[1] Evaluation (uncached)")
 
@@ -168,7 +174,7 @@ def run_benchmarks(pgns: list[str]):
         cache.clear()
         evaluator.evaluate_positions(boards, parallel=True)
 
-    results.append(benchmark("Evaluation (uncached)", eval_uncached))
+    results.append(benchmark("Evaluation (uncached)", eval_uncached, num_positions))
 
     # Evaluation (cached) - cache is now warm from previous run
     print("\n[2] Evaluation (cached)")
@@ -180,8 +186,7 @@ def run_benchmarks(pgns: list[str]):
     cache.clear()
     evaluator.evaluate_positions(boards, parallel=True)
 
-    results.append(benchmark("Evaluation (cached)", eval_cached))
-    print(f"  Cache stats: {cache.get_stats()}")
+    results.append(benchmark("Evaluation (cached)", eval_cached, num_positions))
 
     # --- Video Generation Benchmarks ---
     print("\n" + "-" * 60)
@@ -196,7 +201,7 @@ def run_benchmarks(pgns: list[str]):
         generate_game_video(pgn, use_stockfish=evaluator.available)
 
     results.append(
-        benchmark("Video generation (uncached)", video_uncached, iterations=2)
+        benchmark("Video generation (uncached)", video_uncached, num_positions, iterations=2)
     )
 
     # Video generation (cached) - cache is warm
@@ -209,19 +214,20 @@ def run_benchmarks(pgns: list[str]):
     def video_cached():
         generate_game_video(pgn, use_stockfish=evaluator.available)
 
-    results.append(benchmark("Video generation (cached)", video_cached, iterations=2))
-    print(f"  Cache stats: {cache.get_stats()}")
+    results.append(
+        benchmark("Video generation (cached)", video_cached, num_positions, iterations=2)
+    )
 
     # --- Summary ---
     print("\n" + "=" * 60)
-    print("SUMMARY")
+    print(f"SUMMARY ({num_positions} positions)")
     print("=" * 60)
-    print(f"\n{'Benchmark':<35} {'Mean':>10} {'Min':>10} {'Max':>10}")
-    print("-" * 65)
+    print(f"\n{'Benchmark':<35} {'Total':>10} {'Per Move':>12}")
+    print("-" * 58)
 
     for r in results:
         print(
-            f"{r['name']:<35} {r['mean']:>9.3f}s {r['min']:>9.3f}s {r['max']:>9.3f}s"
+            f"{r['name']:<35} {r['mean']:>9.3f}s {r['per_move']:>10.1f}ms"
         )
 
     # Calculate speedups
