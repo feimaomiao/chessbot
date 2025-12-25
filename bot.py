@@ -8,6 +8,8 @@ when they complete games.
 
 import asyncio
 import logging
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 import sys
 
 import discord
@@ -22,11 +24,26 @@ from cogs.tracking import TrackingCog
 from cogs.admin import AdminCog
 
 # Setup logging
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL),
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+LOG_DIR = Path("./logs")
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = LOG_DIR / "chesstracker.log"
+
+logger = logging.getLogger()
+logger.setLevel(getattr(logging, LOG_LEVEL))
+
+formatter = logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+
+file_handler = RotatingFileHandler(
+    LOG_FILE,
+    maxBytes=1024 * 1024,  # 1MB
+    backupCount=5,
+)
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
+
 logger = logging.getLogger(__name__)
 
 

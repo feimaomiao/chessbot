@@ -25,5 +25,6 @@ data/
 *.swo
 
 # Logs
+logs/
 *.log
 .DS_Store
