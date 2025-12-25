@@ -111,12 +111,18 @@ class NotificationService:
         )
 
         # Game info in description
-        embed.description = (
-            f"{result_emoji} **{game.result.capitalize()}**\n"
-            f"**Format:** {tc_emoji} {game.time_control.capitalize()} ({game.time_control_display})\n"
-            f"**Rating:** {game.rating_after} ({rating_change_str})\n"
-            f"**Played:** {time_str}"
-        )
+        description_lines = [
+            f"{result_emoji} **{game.result.capitalize()}**",
+            f"**Format:** {tc_emoji} {game.time_control.capitalize()} ({game.time_control_display})",
+            f"**Rating:** {game.rating_after} ({rating_change_str})",
+        ]
+
+        # Add accuracy if available
+        if game.accuracy is not None:
+            description_lines.append(f"**Accuracy:** {game.accuracy:.1f}%")
+
+        description_lines.append(f"**Played:** {time_str}")
+        embed.description = "\n".join(description_lines)
 
         # Generate video if PGN is available, otherwise fall back to static image
         file = None

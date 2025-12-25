@@ -9,7 +9,7 @@ from discord.ext import commands
 from config import Platform
 from database import DatabaseManager, TrackedPlayer
 from services.tracker import GameTracker
-from services.analysis import analyze_games, AnalysisResult
+from services.analysis import analyze_games, calculate_accuracy_stats, AnalysisResult
 from utils.board import get_board_discord_file
 from utils.helpers import format_platform_name, format_rating_change, get_time_control_emoji
 from utils.video import generate_game_video_async
@@ -425,11 +425,16 @@ class TrackingCog(commands.Cog):
         )
 
         # Game info in description
-        embed.description = (
-            f"**Format:** {tc_emoji} {game.time_control.capitalize()} ({game.time_control_display})\n"
-            f"**Rating:** {game.rating_after} ({rating_change_str})\n"
-            f"**Played:** {time_str}"
-        )
+        description_lines = [
+            f"**Format:** {tc_emoji} {game.time_control.capitalize()} ({game.time_control_display})",
+            f"**Rating:** {game.rating_after} ({rating_change_str})",
+        ]
+
+        if game.accuracy is not None:
+            description_lines.append(f"**Accuracy:** {game.accuracy:.1f}%")
+
+        description_lines.append(f"**Played:** {time_str}")
+        embed.description = "\n".join(description_lines)
 
         return embed
 
@@ -561,8 +566,15 @@ class TrackingCog(commands.Cog):
             )
             return
 
-        # Run analysis
+        # Run analysis on API games (for openings)
         result = analyze_games(games)
+
+        # Get accuracy stats from database games
+        db_games = await self.db.get_recent_games(player.id, limit=1000)
+        if db_games:
+            avg_acc, acc_count = calculate_accuracy_stats(db_games)
+            result.avg_accuracy = avg_acc
+            result.games_with_accuracy = acc_count
 
         # Create and send embed
         embed = self._create_analysis_embed(player, platform, result)
@@ -626,6 +638,14 @@ class TrackingCog(commands.Cog):
                     f"White: {white_total} games ({white_wr} win, {white_ld})\n"
                     f"Black: {black_total} games ({black_wr} win, {black_ld})"
                 ),
+                inline=False,
+            )
+
+        # Accuracy stats
+        if result.avg_accuracy is not None:
+            embed.add_field(
+                name="Average Accuracy",
+                value=f"{result.avg_accuracy:.1f}% ({result.games_with_accuracy} games analyzed)",
                 inline=False,
             )
 
@@ -703,11 +723,16 @@ class TrackingCog(commands.Cog):
         )
 
         # Game info in description
-        embed.description = (
-            f"**Format:** {tc_emoji} {game.time_control.capitalize()} ({game.time_control_display})\n"
-            f"**Rating:** {game.rating_after} ({rating_change_str})\n"
-            f"**Played:** {time_str}"
-        )
+        description_lines = [
+            f"**Format:** {tc_emoji} {game.time_control.capitalize()} ({game.time_control_display})",
+            f"**Rating:** {game.rating_after} ({rating_change_str})",
+        ]
+
+        if game.accuracy is not None:
+            description_lines.append(f"**Accuracy:** {game.accuracy:.1f}%")
+
+        description_lines.append(f"**Played:** {time_str}")
+        embed.description = "\n".join(description_lines)
 
         # Add board image
         file = None

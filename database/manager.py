@@ -60,6 +60,7 @@ class DatabaseManager:
                 game_url TEXT,
                 final_fen TEXT,
                 notified BOOLEAN DEFAULT 0,
+                accuracy REAL,
                 FOREIGN KEY (player_id) REFERENCES tracked_players(id),
                 UNIQUE(player_id, game_id)
             );
@@ -74,6 +75,15 @@ class DatabaseManager:
         try:
             await self._connection.execute(
                 "ALTER TABLE tracked_players ADD COLUMN discord_user_id INTEGER"
+            )
+            await self._connection.commit()
+        except Exception:
+            pass  # Column already exists
+
+        # Migration: Add accuracy column if it doesn't exist
+        try:
+            await self._connection.execute(
+                "ALTER TABLE games ADD COLUMN accuracy REAL"
             )
             await self._connection.commit()
         except Exception:
@@ -174,6 +184,14 @@ class DatabaseManager:
         rows = await cursor.fetchall()
         return [self._row_to_player(row) for row in rows]
 
+    async def get_tracked_player_by_id(self, player_id: int) -> Optional[TrackedPlayer]:
+        """Get a tracked player by their ID."""
+        cursor = await self._connection.execute(
+            "SELECT * FROM tracked_players WHERE id = ?", (player_id,)
+        )
+        row = await cursor.fetchone()
+        return self._row_to_player(row) if row else None
+
     async def get_tracked_player(
         self, guild_id: int, platform: str, username: str
     ) -> Optional[TrackedPlayer]:
@@ -207,12 +225,12 @@ class DatabaseManager:
                 """INSERT INTO games
                    (player_id, game_id, platform, time_control, time_control_display,
                     result, player_color, rating_after, rating_change, opponent, opponent_rating,
-                    played_at, game_url, final_fen, notified)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    played_at, game_url, final_fen, notified, accuracy)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (game.player_id, game.game_id, game.platform, game.time_control,
                  game.time_control_display, game.result, game.player_color, game.rating_after,
                  game.rating_change, game.opponent, game.opponent_rating,
-                 game.played_at, game.game_url, game.final_fen, game.notified),
+                 game.played_at, game.game_url, game.final_fen, game.notified, game.accuracy),
             )
             await self._connection.commit()
             game.id = cursor.lastrowid
@@ -226,6 +244,23 @@ class DatabaseManager:
             "UPDATE games SET notified = 1 WHERE id = ?", (game_id,)
         )
         await self._connection.commit()
+
+    async def update_game_accuracy(self, game_id: int, accuracy: float):
+        """Update the accuracy for a game."""
+        await self._connection.execute(
+            "UPDATE games SET accuracy = ? WHERE id = ?", (accuracy, game_id)
+        )
+        await self._connection.commit()
+
+    async def get_games_without_accuracy(self) -> list[Game]:
+        """Get all games that don't have accuracy calculated."""
+        cursor = await self._connection.execute(
+            """SELECT * FROM games
+               WHERE accuracy IS NULL
+               ORDER BY played_at DESC"""
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_game(row) for row in rows]
 
     async def get_unnotified_games(self, player_id: int) -> list[Game]:
         """Get games that haven't been notified yet."""
@@ -430,4 +465,5 @@ class DatabaseManager:
             game_url=row["game_url"],
             final_fen=row["final_fen"],
             notified=bool(row["notified"]),
+            accuracy=row["accuracy"] if "accuracy" in row.keys() else None,
         )

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime
 
@@ -5,9 +6,11 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from api import ChessComClient, LichessClient
 from config import Platform
 from database import DatabaseManager
 from services.daily_summary import SummaryService
+from utils.accuracy import calculate_accuracy_from_pgn
 from utils.stats import get_stats_tracker, get_system_specs
 from utils.video import get_stockfish_evaluator
 
@@ -220,8 +223,110 @@ class AdminCog(commands.Cog):
 
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+    @app_commands.command(name="reprocess", description="Reprocess all games to calculate accuracy (admin only)")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def reprocess(self, interaction: discord.Interaction):
+        """Reprocess all games without accuracy to calculate their accuracy scores."""
+        await interaction.response.defer(ephemeral=True)
+
+        # Check Stockfish availability
+        evaluator = get_stockfish_evaluator()
+        if not evaluator.available:
+            await interaction.followup.send(
+                "Stockfish is not available. Cannot calculate accuracy.",
+                ephemeral=True,
+            )
+            return
+
+        # Get all games without accuracy
+        games = await self.db.get_games_without_accuracy()
+
+        if not games:
+            await interaction.followup.send(
+                "All games already have accuracy calculated!",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.followup.send(
+            f"Found **{len(games)}** games without accuracy. Starting reprocessing...\n"
+            f"This may take a while. Progress updates will be sent here.",
+            ephemeral=True,
+        )
+
+        # Create API clients
+        lichess_client = LichessClient()
+        chesscom_client = ChessComClient()
+
+        # Get player info for fetching PGNs
+        players_cache = {}
+
+        processed = 0
+        failed = 0
+        skipped = 0
+
+        try:
+            for i, game in enumerate(games):
+                # Get player info (cached)
+                if game.player_id not in players_cache:
+                    player = await self.db.get_tracked_player_by_id(game.player_id)
+                    players_cache[game.player_id] = player
+
+                player = players_cache.get(game.player_id)
+                if not player:
+                    skipped += 1
+                    continue
+
+                try:
+                    # Fetch PGN
+                    pgn = None
+                    if game.platform == Platform.LICHESS:
+                        pgn = await lichess_client.get_game_pgn(game.game_id)
+                    elif game.platform == Platform.CHESSCOM:
+                        pgn = await chesscom_client.get_game_pgn(player.username, game.game_id)
+
+                    if not pgn:
+                        skipped += 1
+                        continue
+
+                    # Calculate accuracy
+                    accuracy = await calculate_accuracy_from_pgn(pgn, game.player_color)
+
+                    if accuracy is not None:
+                        await self.db.update_game_accuracy(game.id, accuracy)
+                        processed += 1
+                    else:
+                        skipped += 1
+
+                except Exception as e:
+                    logger.error(f"Error processing game {game.game_id}: {e}")
+                    failed += 1
+
+                # Progress update every 10 games
+                if (i + 1) % 10 == 0:
+                    await interaction.followup.send(
+                        f"Progress: {i + 1}/{len(games)} games processed...",
+                        ephemeral=True,
+                    )
+
+                # Small delay to avoid rate limiting
+                await asyncio.sleep(0.5)
+
+        finally:
+            await lichess_client.close()
+            await chesscom_client.close()
+
+        await interaction.followup.send(
+            f"**Reprocessing complete!**\n"
+            f"Processed: {processed}\n"
+            f"Skipped: {skipped}\n"
+            f"Failed: {failed}",
+            ephemeral=True,
+        )
+
     @setchannel.error
     @manual_summary.error
+    @reprocess.error
     async def command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
     ):

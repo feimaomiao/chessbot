@@ -59,6 +59,10 @@ class AnalysisResult:
     rating_high: int = 0
     rating_low: int = 0
 
+    # Accuracy stats
+    avg_accuracy: Optional[float] = None
+    games_with_accuracy: int = 0
+
     @property
     def rating_change(self) -> int:
         """Total rating change over the period."""
@@ -228,3 +232,22 @@ def _normalize_opening_name(name: str) -> str:
             name = name.split(delimiter)[0].strip()
 
     return name
+
+
+def calculate_accuracy_stats(games) -> tuple[Optional[float], int]:
+    """
+    Calculate average accuracy from a list of database Game objects.
+
+    Args:
+        games: List of Game objects with accuracy field
+
+    Returns:
+        Tuple of (average_accuracy, games_with_accuracy_count)
+    """
+    accuracies = [g.accuracy for g in games if g.accuracy is not None]
+
+    if not accuracies:
+        return None, 0
+
+    avg = sum(accuracies) / len(accuracies)
+    return round(avg, 1), len(accuracies)

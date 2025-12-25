@@ -45,3 +45,4 @@ class Game:
     game_url: str
     final_fen: Optional[str] = None  # Final board position
     notified: bool = False
+    accuracy: Optional[float] = None  # Player's accuracy percentage (0-100)
