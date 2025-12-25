@@ -860,9 +860,8 @@ def generate_game_video(
         if track_stats:
             elapsed_ms = (time.perf_counter() - start_time) * 1000
             cache_hits = cache._hits - cache_hits_before
-            used_cache = cache_hits > 0
             tracker = get_stats_tracker()
-            tracker.record_video_generation(len(positions), elapsed_ms, used_cache)
+            tracker.record_video_generation(len(positions), elapsed_ms, cache_hits)
 
         return video_bytes
 

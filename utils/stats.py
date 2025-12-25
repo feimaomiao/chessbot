@@ -77,28 +77,35 @@ class OperationStats:
 @dataclass
 class PerformanceStats:
     """Container for all performance statistics."""
-    evaluation_uncached: OperationStats = field(default_factory=OperationStats)
-    evaluation_cached: OperationStats = field(default_factory=OperationStats)
-    video_generation_uncached: OperationStats = field(default_factory=OperationStats)
-    video_generation_cached: OperationStats = field(default_factory=OperationStats)
+    evaluation: OperationStats = field(default_factory=OperationStats)
+    video_generation: OperationStats = field(default_factory=OperationStats)
+    total_cache_hits: int = 0
+    total_cache_misses: int = 0
     started_at: Optional[str] = None
+
+    @property
+    def cache_hit_rate(self) -> float:
+        total = self.total_cache_hits + self.total_cache_misses
+        if total == 0:
+            return 0.0
+        return (self.total_cache_hits / total) * 100
 
     def to_dict(self) -> dict:
         return {
-            "evaluation_uncached": self.evaluation_uncached.to_dict(),
-            "evaluation_cached": self.evaluation_cached.to_dict(),
-            "video_generation_uncached": self.video_generation_uncached.to_dict(),
-            "video_generation_cached": self.video_generation_cached.to_dict(),
+            "evaluation": self.evaluation.to_dict(),
+            "video_generation": self.video_generation.to_dict(),
+            "total_cache_hits": self.total_cache_hits,
+            "total_cache_misses": self.total_cache_misses,
             "started_at": self.started_at,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "PerformanceStats":
         stats = cls()
-        stats.evaluation_uncached = OperationStats.from_dict(data.get("evaluation_uncached", {}))
-        stats.evaluation_cached = OperationStats.from_dict(data.get("evaluation_cached", {}))
-        stats.video_generation_uncached = OperationStats.from_dict(data.get("video_generation_uncached", {}))
-        stats.video_generation_cached = OperationStats.from_dict(data.get("video_generation_cached", {}))
+        stats.evaluation = OperationStats.from_dict(data.get("evaluation", {}))
+        stats.video_generation = OperationStats.from_dict(data.get("video_generation", {}))
+        stats.total_cache_hits = data.get("total_cache_hits", 0)
+        stats.total_cache_misses = data.get("total_cache_misses", 0)
         stats.started_at = data.get("started_at")
         return stats
 
@@ -137,28 +144,17 @@ class StatsTracker:
     def record_evaluation(self, positions: int, time_ms: float, cache_hits: int):
         """Record an evaluation operation."""
         with self._lock:
-            # If all positions were cache hits, record as cached
-            if cache_hits == positions:
-                self._stats.evaluation_cached.record(positions, time_ms)
-            elif cache_hits == 0:
-                self._stats.evaluation_uncached.record(positions, time_ms)
-            else:
-                # Mixed: record proportionally
-                cached_time = time_ms * (cache_hits / positions)
-                uncached_time = time_ms - cached_time
-                if cache_hits > 0:
-                    self._stats.evaluation_cached.record(cache_hits, cached_time)
-                if positions - cache_hits > 0:
-                    self._stats.evaluation_uncached.record(positions - cache_hits, uncached_time)
+            self._stats.evaluation.record(positions, time_ms)
+            self._stats.total_cache_hits += cache_hits
+            self._stats.total_cache_misses += positions - cache_hits
             self._save_stats()
 
-    def record_video_generation(self, positions: int, time_ms: float, used_cache: bool):
+    def record_video_generation(self, positions: int, time_ms: float, cache_hits: int):
         """Record a video generation operation."""
         with self._lock:
-            if used_cache:
-                self._stats.video_generation_cached.record(positions, time_ms)
-            else:
-                self._stats.video_generation_uncached.record(positions, time_ms)
+            self._stats.video_generation.record(positions, time_ms)
+            self._stats.total_cache_hits += cache_hits
+            self._stats.total_cache_misses += positions - cache_hits
             self._save_stats()
 
     def get_stats(self) -> PerformanceStats:

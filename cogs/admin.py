@@ -185,40 +185,30 @@ class AdminCog(commands.Cog):
         embed.add_field(name="System", value=system_info, inline=False)
 
         # Evaluation stats
-        eval_uncached = perf_stats.evaluation_uncached
-        eval_cached = perf_stats.evaluation_cached
-
-        if eval_uncached.total_operations > 0 or eval_cached.total_operations > 0:
-            eval_info = ""
-            if eval_uncached.total_operations > 0:
-                eval_info += (
-                    f"**Uncached:** {eval_uncached.avg_time_per_position_ms:.1f}ms/pos "
-                    f"({eval_uncached.total_positions} positions)\n"
-                )
-            if eval_cached.total_operations > 0:
-                eval_info += (
-                    f"**Cached:** {eval_cached.avg_time_per_position_ms:.1f}ms/pos "
-                    f"({eval_cached.total_positions} positions)"
-                )
-            embed.add_field(name="Evaluation Performance", value=eval_info.strip(), inline=False)
+        eval_stats = perf_stats.evaluation
+        if eval_stats.total_operations > 0:
+            eval_info = (
+                f"**Avg:** {eval_stats.avg_time_per_position_ms:.1f}ms/position\n"
+                f"**Total:** {eval_stats.total_positions} positions in {eval_stats.total_operations} operations"
+            )
+            embed.add_field(name="Evaluation Performance", value=eval_info, inline=False)
 
         # Video generation stats
-        video_uncached = perf_stats.video_generation_uncached
-        video_cached = perf_stats.video_generation_cached
+        video_stats = perf_stats.video_generation
+        if video_stats.total_operations > 0:
+            video_info = (
+                f"**Avg:** {video_stats.avg_time_per_position_ms:.1f}ms/position\n"
+                f"**Total:** {video_stats.total_positions} positions in {video_stats.total_operations} videos"
+            )
+            embed.add_field(name="Video Generation Performance", value=video_info, inline=False)
 
-        if video_uncached.total_operations > 0 or video_cached.total_operations > 0:
-            video_info = ""
-            if video_uncached.total_operations > 0:
-                video_info += (
-                    f"**Uncached:** {video_uncached.avg_time_per_position_ms:.1f}ms/pos "
-                    f"({video_uncached.total_operations} videos)\n"
-                )
-            if video_cached.total_operations > 0:
-                video_info += (
-                    f"**Cached:** {video_cached.avg_time_per_position_ms:.1f}ms/pos "
-                    f"({video_cached.total_operations} videos)"
-                )
-            embed.add_field(name="Video Generation Performance", value=video_info.strip(), inline=False)
+        # Cache stats
+        if perf_stats.total_cache_hits > 0 or perf_stats.total_cache_misses > 0:
+            cache_info = (
+                f"**Hit Rate:** {perf_stats.cache_hit_rate:.1f}%\n"
+                f"**Hits:** {perf_stats.total_cache_hits} / **Misses:** {perf_stats.total_cache_misses}"
+            )
+            embed.add_field(name="Evaluation Cache", value=cache_info, inline=False)
 
         # Stats tracking info
         if perf_stats.started_at:
