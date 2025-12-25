@@ -49,20 +49,29 @@ PIECE_VALUES = {
     chess.KING: 0,
 }
 
+# Import performance settings from config
+from config import (
+    STOCKFISH_DEPTH as CONFIG_STOCKFISH_DEPTH,
+    BOARD_SIZE as CONFIG_BOARD_SIZE,
+    MAX_EVAL_WORKERS,
+    USE_MATERIAL_EVAL_ONLY,
+    SKIP_OPENING_MOVES,
+)
+
 # Video settings
 FRAME_DURATION_MS = 1000  # 1 second per move
-BOARD_SIZE = 400
+BOARD_SIZE = CONFIG_BOARD_SIZE
 EVAL_BAR_WIDTH = 30
 EVAL_BAR_HEIGHT = BOARD_SIZE
 
 # Parallelization settings
-MAX_WORKERS = None  # None = use cpu_count() * 5 for ThreadPoolExecutor
+MAX_WORKERS = MAX_EVAL_WORKERS  # None = use cpu_count() * 5 for ThreadPoolExecutor
 
 # Cache settings
 EVAL_CACHE_SIZE = 10000  # Number of positions to cache
 
 # Stockfish settings
-STOCKFISH_DEPTH = 12  # Analysis depth (higher = slower but more accurate)
+STOCKFISH_DEPTH = CONFIG_STOCKFISH_DEPTH  # Analysis depth (higher = slower but more accurate)
 STOCKFISH_PATHS = [
     "/usr/local/bin/stockfish",
     "/usr/bin/stockfish",
@@ -186,7 +195,9 @@ class StockfishEvaluator:
 
     @property
     def available(self) -> bool:
-        """Check if Stockfish is available."""
+        """Check if Stockfish is available and enabled."""
+        if USE_MATERIAL_EVAL_ONLY:
+            return False  # Force material evaluation only
         return self.engine is not None
 
     def evaluate(self, board: chess.Board, use_cache: bool = True) -> float:

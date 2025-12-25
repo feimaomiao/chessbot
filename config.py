@@ -48,3 +48,23 @@ class GameResult:
     WIN = "win"
     LOSS = "loss"
     DRAW = "draw"
+
+
+# Performance settings (tune these for slower machines)
+# Stockfish depth: lower = faster, less accurate (range: 1-20, default: 12)
+STOCKFISH_DEPTH = int(os.getenv("STOCKFISH_DEPTH", "12"))
+
+# Board size in pixels: smaller = faster rendering (default: 400)
+BOARD_SIZE = int(os.getenv("BOARD_SIZE", "400"))
+
+# Max parallel workers for evaluation (default: CPU count, set lower for weak CPUs)
+MAX_EVAL_WORKERS = int(os.getenv("MAX_EVAL_WORKERS", "0")) or None  # 0 = auto
+
+# Skip Stockfish and use material evaluation only (much faster, less accurate)
+USE_MATERIAL_EVAL_ONLY = os.getenv("USE_MATERIAL_EVAL_ONLY", "false").lower() == "true"
+
+# Disable video generation entirely (just show static board image)
+DISABLE_VIDEO = os.getenv("DISABLE_VIDEO", "false").lower() == "true"
+
+# Skip first N opening moves for evaluation (they're usually book moves)
+SKIP_OPENING_MOVES = int(os.getenv("SKIP_OPENING_MOVES", "0"))

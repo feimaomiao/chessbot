@@ -158,7 +158,12 @@ class AdminCog(commands.Cog):
     @app_commands.command(name="specs", description="Show system specs and performance statistics")
     async def specs(self, interaction: discord.Interaction):
         """Show system specifications and performance stats."""
-        await interaction.response.defer(ephemeral=True)
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            # Interaction expired before we could respond
+            logger.warning("Interaction expired for /specs command")
+            return
 
         # Get system specs
         specs = get_system_specs()
@@ -227,7 +232,11 @@ class AdminCog(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def reprocess(self, interaction: discord.Interaction):
         """Reprocess all games without accuracy to calculate their accuracy scores."""
-        await interaction.response.defer(ephemeral=True)
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            logger.warning("Interaction expired for /reprocess command")
+            return
 
         # Check Stockfish availability
         evaluator = get_stockfish_evaluator()

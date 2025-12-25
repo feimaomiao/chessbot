@@ -4,6 +4,7 @@ from typing import Optional
 
 import discord
 
+from config import DISABLE_VIDEO
 from database import DatabaseManager, Game, TrackedPlayer
 from utils.board import get_board_discord_file
 from utils.helpers import (
@@ -124,9 +125,9 @@ class NotificationService:
         description_lines.append(f"**Played:** {time_str}")
         embed.description = "\n".join(description_lines)
 
-        # Generate video if PGN is available, otherwise fall back to static image
+        # Generate video if PGN is available and video is enabled
         file = None
-        if pgn:
+        if pgn and not DISABLE_VIDEO:
             try:
                 logger.info(f"Generating video for {player.username}'s game...")
                 video_bytes = await generate_game_video_async(pgn)
