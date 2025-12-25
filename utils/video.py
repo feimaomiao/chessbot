@@ -5,10 +5,13 @@ import logging
 import os
 import tempfile
 import threading
+import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
+
+from utils.stats import get_stats_tracker, Timer
 
 import chess
 import chess.pgn
@@ -259,7 +262,7 @@ class StockfishEvaluator:
             return calculate_material_eval(board)
 
     def evaluate_positions(
-        self, positions: list[chess.Board], parallel: bool = True
+        self, positions: list[chess.Board], parallel: bool = True, track_stats: bool = True
     ) -> list[float]:
         """
         Evaluate multiple positions.
@@ -267,14 +270,29 @@ class StockfishEvaluator:
         Args:
             positions: List of chess board positions
             parallel: Whether to use parallel evaluation (requires multiple Stockfish instances)
+            track_stats: Whether to record performance statistics
 
         Returns:
             List of evaluations in centipawns
         """
-        if not parallel or not self.available:
-            return [self.evaluate(board) for board in positions]
+        cache = get_eval_cache()
 
-        return self._evaluate_parallel(positions)
+        # Count cache hits before evaluation
+        cache_hits_before = cache._hits
+
+        with Timer() as timer:
+            if not parallel or not self.available:
+                results = [self.evaluate(board) for board in positions]
+            else:
+                results = self._evaluate_parallel(positions)
+
+        # Record stats
+        if track_stats:
+            cache_hits = cache._hits - cache_hits_before
+            tracker = get_stats_tracker()
+            tracker.record_evaluation(len(positions), timer.elapsed_ms, cache_hits)
+
+        return results
 
     def _evaluate_parallel(self, positions: list[chess.Board]) -> list[float]:
         """
@@ -764,6 +782,7 @@ def generate_game_video(
     frame_duration_ms: int = FRAME_DURATION_MS,
     board_size: int = BOARD_SIZE,
     use_stockfish: bool = True,
+    track_stats: bool = True,
 ) -> Optional[bytes]:
     """
     Generate a video of a chess game from PGN.
@@ -776,10 +795,15 @@ def generate_game_video(
         frame_duration_ms: Duration of each frame in milliseconds
         board_size: Size of the board in pixels
         use_stockfish: Whether to use Stockfish for evaluation (default True)
+        track_stats: Whether to record performance statistics
 
     Returns:
         MP4 video as bytes, or None if generation fails
     """
+    start_time = time.perf_counter()
+    cache = get_eval_cache()
+    cache_hits_before = cache._hits
+
     try:
         import imageio.v3 as iio
     except ImportError:
@@ -797,7 +821,8 @@ def generate_game_video(
         if evaluator.available:
             logger.info(f"Evaluating {len(positions)} positions with Stockfish...")
             boards = [board for board, _ in positions]
-            evaluations = evaluator.evaluate_positions(boards)
+            # Don't double-track stats from evaluate_positions
+            evaluations = evaluator.evaluate_positions(boards, track_stats=False)
             logger.info("Stockfish evaluation complete")
         else:
             logger.info("Stockfish not available, using material evaluation")
@@ -830,6 +855,15 @@ def generate_game_video(
 
         # Read the video bytes
         video_bytes = tmp_path.read_bytes()
+
+        # Record stats
+        if track_stats:
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+            cache_hits = cache._hits - cache_hits_before
+            used_cache = cache_hits > 0
+            tracker = get_stats_tracker()
+            tracker.record_video_generation(len(positions), elapsed_ms, used_cache)
+
         return video_bytes
 
     except Exception as e:

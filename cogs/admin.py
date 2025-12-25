@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 
 import discord
 from discord import app_commands
@@ -7,6 +8,8 @@ from discord.ext import commands
 from config import Platform
 from database import DatabaseManager
 from services.daily_summary import SummaryService
+from utils.stats import get_stats_tracker, get_system_specs
+from utils.video import get_stockfish_evaluator
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +151,84 @@ class AdminCog(commands.Cog):
                 "No tracked players found. Add players with `/track` first.",
                 ephemeral=True,
             )
+
+    @app_commands.command(name="specs", description="Show system specs and performance statistics")
+    async def specs(self, interaction: discord.Interaction):
+        """Show system specifications and performance stats."""
+        await interaction.response.defer(ephemeral=True)
+
+        # Get system specs
+        specs = get_system_specs()
+
+        # Get performance stats
+        tracker = get_stats_tracker()
+        perf_stats = tracker.get_stats()
+
+        # Check Stockfish availability
+        evaluator = get_stockfish_evaluator()
+        stockfish_status = "Available" if evaluator.available else "Not available"
+
+        embed = discord.Embed(
+            title="System Specifications & Performance",
+            color=discord.Color.blue(),
+        )
+
+        # System info
+        system_info = (
+            f"**Platform:** {specs.get('platform', 'Unknown')} ({specs.get('architecture', 'Unknown')})\n"
+            f"**CPU:** {specs.get('processor', 'Unknown')}\n"
+            f"**Cores:** {specs.get('cpu_cores_physical', '?')} physical / {specs.get('cpu_cores_logical', '?')} logical\n"
+            f"**Memory:** {specs.get('memory_available_gb', '?')} GB available / {specs.get('memory_total_gb', '?')} GB total\n"
+            f"**Python:** {specs.get('python_version', 'Unknown')}\n"
+            f"**Stockfish:** {stockfish_status}"
+        )
+        embed.add_field(name="System", value=system_info, inline=False)
+
+        # Evaluation stats
+        eval_uncached = perf_stats.evaluation_uncached
+        eval_cached = perf_stats.evaluation_cached
+
+        if eval_uncached.total_operations > 0 or eval_cached.total_operations > 0:
+            eval_info = ""
+            if eval_uncached.total_operations > 0:
+                eval_info += (
+                    f"**Uncached:** {eval_uncached.avg_time_per_position_ms:.1f}ms/pos "
+                    f"({eval_uncached.total_positions} positions)\n"
+                )
+            if eval_cached.total_operations > 0:
+                eval_info += (
+                    f"**Cached:** {eval_cached.avg_time_per_position_ms:.1f}ms/pos "
+                    f"({eval_cached.total_positions} positions)"
+                )
+            embed.add_field(name="Evaluation Performance", value=eval_info.strip(), inline=False)
+
+        # Video generation stats
+        video_uncached = perf_stats.video_generation_uncached
+        video_cached = perf_stats.video_generation_cached
+
+        if video_uncached.total_operations > 0 or video_cached.total_operations > 0:
+            video_info = ""
+            if video_uncached.total_operations > 0:
+                video_info += (
+                    f"**Uncached:** {video_uncached.avg_time_per_position_ms:.1f}ms/pos "
+                    f"({video_uncached.total_operations} videos)\n"
+                )
+            if video_cached.total_operations > 0:
+                video_info += (
+                    f"**Cached:** {video_cached.avg_time_per_position_ms:.1f}ms/pos "
+                    f"({video_cached.total_operations} videos)"
+                )
+            embed.add_field(name="Video Generation Performance", value=video_info.strip(), inline=False)
+
+        # Stats tracking info
+        if perf_stats.started_at:
+            try:
+                started = datetime.fromisoformat(perf_stats.started_at)
+                embed.set_footer(text=f"Stats tracking since {started.strftime('%Y-%m-%d %H:%M UTC')}")
+            except ValueError:
+                pass
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @setchannel.error
     @manual_summary.error

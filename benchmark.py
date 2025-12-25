@@ -172,7 +172,7 @@ def run_benchmarks(pgns: list[str]):
 
     def eval_uncached():
         cache.clear()
-        evaluator.evaluate_positions(boards, parallel=True)
+        evaluator.evaluate_positions(boards, parallel=True, track_stats=False)
 
     results.append(benchmark("Evaluation (uncached)", eval_uncached, num_positions))
 
@@ -180,11 +180,11 @@ def run_benchmarks(pgns: list[str]):
     print("\n[2] Evaluation (cached)")
 
     def eval_cached():
-        evaluator.evaluate_positions(boards, parallel=True)
+        evaluator.evaluate_positions(boards, parallel=True, track_stats=False)
 
     # Warm the cache first
     cache.clear()
-    evaluator.evaluate_positions(boards, parallel=True)
+    evaluator.evaluate_positions(boards, parallel=True, track_stats=False)
 
     results.append(benchmark("Evaluation (cached)", eval_cached, num_positions))
 
@@ -198,7 +198,7 @@ def run_benchmarks(pgns: list[str]):
 
     def video_uncached():
         cache.clear()
-        generate_game_video(pgn, use_stockfish=evaluator.available)
+        generate_game_video(pgn, use_stockfish=evaluator.available, track_stats=False)
 
     results.append(
         benchmark("Video generation (uncached)", video_uncached, num_positions, iterations=2)
@@ -209,10 +209,10 @@ def run_benchmarks(pgns: list[str]):
 
     # Warm the cache
     cache.clear()
-    generate_game_video(pgn, use_stockfish=evaluator.available)
+    generate_game_video(pgn, use_stockfish=evaluator.available, track_stats=False)
 
     def video_cached():
-        generate_game_video(pgn, use_stockfish=evaluator.available)
+        generate_game_video(pgn, use_stockfish=evaluator.available, track_stats=False)
 
     results.append(
         benchmark("Video generation (cached)", video_cached, num_positions, iterations=2)
