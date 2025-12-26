@@ -44,8 +44,8 @@ class LichessClient(BaseChessClient):
         params = ["max=30", "pgnInJson=false", "lastFen=true", "opening=true"]
 
         if since:
-            # Lichess uses milliseconds
-            since_ms = int(since.timestamp() * 1000)
+            # Lichess uses milliseconds, add 1ms to exclude the exact boundary game
+            since_ms = int(since.timestamp() * 1000) + 1
             params.append(f"since={since_ms}")
 
         url = f"{url}?{'&'.join(params)}"

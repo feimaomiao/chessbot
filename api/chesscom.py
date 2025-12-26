@@ -47,8 +47,8 @@ class ChessComClient(BaseChessClient):
             try:
                 game = self._parse_game(username, game_data)
                 if game:
-                    # Filter by time if specified
-                    if since and game.played_at < since:
+                    # Filter by time if specified (use <= to exclude the last known game)
+                    if since and game.played_at <= since:
                         continue
                     games.append(game)
             except Exception as e:
