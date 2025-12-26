@@ -68,21 +68,34 @@ class GameTracker:
             logger.debug("No tracked players found")
             return
 
-        logger.debug(f"Polling {len(players)} tracked player(s)")
+        logger.info(f"Polling {len(players)} tracked player(s)")
 
         # Group by platform to avoid mixing rate limits
         chesscom_players = [p for p in players if p.platform == Platform.CHESSCOM]
         lichess_players = [p for p in players if p.platform == Platform.LICHESS]
 
-        # Poll each platform
-        for player in chesscom_players:
-            await self._poll_player(player, self.chesscom_client)
+        # Poll Chess.com players in parallel
+        if chesscom_players:
+            logger.debug(f"Polling {len(chesscom_players)} Chess.com player(s)")
+            tasks = [self._poll_player(p, self.chesscom_client) for p in chesscom_players]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for player, result in zip(chesscom_players, results):
+                if isinstance(result, Exception):
+                    logger.error(f"Error polling {player.username} on Chess.com: {result}")
 
-        for player in lichess_players:
-            await self._poll_player(player, self.lichess_client)
+        # Poll Lichess players in parallel
+        if lichess_players:
+            logger.debug(f"Polling {len(lichess_players)} Lichess player(s)")
+            tasks = [self._poll_player(p, self.lichess_client) for p in lichess_players]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for player, result in zip(lichess_players, results):
+                if isinstance(result, Exception):
+                    logger.error(f"Error polling {player.username} on Lichess: {result}")
 
     async def _poll_player(self, player: TrackedPlayer, client):
         """Poll a single player for new games."""
+        logger.debug(f"Polling {player.username} on {player.platform}...")
+
         try:
             # Get the timestamp of their last known game
             last_game_time = await self.db.get_latest_game_time(player.id)
@@ -91,17 +104,20 @@ class GameTracker:
             if last_game_time is None:
                 last_game_time = datetime.utcnow() - timedelta(hours=1)
 
-            # Fetch recent games
+            # Fetch recent games from API
             games = await client.get_recent_games(player.username, since=last_game_time)
 
             if games:
-                logger.info(f"Found {len(games)} game(s) for {player.username} on {player.platform}")
+                logger.info(f"Found {len(games)} new game(s) for {player.username} on {player.platform}")
+            else:
+                logger.debug(f"No new games for {player.username}")
 
             for game_data in games:
                 await self._process_game(player, game_data)
 
         except Exception as e:
             logger.error(f"Error polling {player.username} on {player.platform}: {e}", exc_info=True)
+            raise  # Re-raise so asyncio.gather can catch it
 
     async def _process_game(self, player: TrackedPlayer, game_data: GameData):
         """Process a single game from the API."""
@@ -182,7 +198,14 @@ class GameTracker:
         return False
 
     async def initialize_player_history(self, player: TrackedPlayer) -> int:
-        """Fetch and store game history from the last 24 hours for a newly tracked player."""
+        """Fetch and store game history for a newly tracked player.
+
+        Fetches games from the last 24 hours for summary purposes. If no games
+        are found in that window, fetches the most recent game from history
+        so future polling has a reference point.
+
+        Games are stored silently without sending notifications.
+        """
         if player.platform == Platform.CHESSCOM:
             client = self.chesscom_client
         else:
@@ -192,6 +215,13 @@ class GameTracker:
             # Fetch games from the last 24 hours
             since = datetime.utcnow() - timedelta(hours=24)
             games = await client.get_recent_games(player.username, since=since)
+
+            # If no games in last 24 hours, fetch the most recent game from history
+            # so we have a reference point for future polling
+            if not games:
+                logger.info(f"No games in last 24h for {player.username}, fetching most recent game")
+                historical_games = await client.get_games_for_analysis(player.username, max_games=1)
+                games = historical_games[:1] if historical_games else []
 
             # Sort oldest first for proper rating calculation
             games = sorted(games, key=lambda g: g.played_at)
@@ -223,7 +253,7 @@ class GameTracker:
                     played_at=game_data.played_at,
                     game_url=game_data.game_url,
                     final_fen=game_data.final_fen,
-                    notified=True,  # Don't notify for historical games
+                    notified=True,  # Mark as notified to avoid sending notifications
                 )
 
                 saved = await self.db.add_game(game)
@@ -233,7 +263,7 @@ class GameTracker:
                     if game_data.rating_after:
                         prev_ratings[tc] = game_data.rating_after
 
-            logger.info(f"Initialized {stored} games from last 24h for {player.username}")
+            logger.info(f"Initialized {stored} games for {player.username}")
             return stored
 
         except Exception as e:

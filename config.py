@@ -68,3 +68,6 @@ DISABLE_VIDEO = os.getenv("DISABLE_VIDEO", "false").lower() == "true"
 
 # Skip first N opening moves for evaluation (they're usually book moves)
 SKIP_OPENING_MOVES = int(os.getenv("SKIP_OPENING_MOVES", "0"))
+
+# Enable move/capture sounds in videos (requires ffmpeg)
+ENABLE_VIDEO_AUDIO = os.getenv("ENABLE_VIDEO_AUDIO", "true").lower() == "true"
