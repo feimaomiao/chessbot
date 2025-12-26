@@ -56,6 +56,7 @@ from config import (
     MAX_EVAL_WORKERS,
     USE_MATERIAL_EVAL_ONLY,
     SKIP_OPENING_MOVES,
+    ENABLE_VIDEO_AUDIO,
 )
 
 # Video settings
@@ -787,6 +788,44 @@ def parse_pgn_positions(pgn_str: str) -> list[tuple[chess.Board, chess.Move | No
         return []
 
 
+def parse_pgn_with_captures(pgn_str: str) -> tuple[list[tuple[chess.Board, chess.Move | None]], list[tuple[bool, int]]]:
+    """
+    Parse a PGN string and return positions along with capture info for audio.
+
+    Returns:
+        Tuple of:
+        - List of (board, move) tuples
+        - List of (is_capture, position_index) for audio generation
+    """
+    if not pgn_str:
+        return [], []
+
+    try:
+        pgn = chess.pgn.read_game(io.StringIO(pgn_str))
+        if pgn is None:
+            return [], []
+
+        positions = []
+        moves_data = []
+        board = pgn.board()
+
+        # Add starting position (no sound for initial position)
+        positions.append((board.copy(), None))
+
+        # Add each position after a move
+        for idx, move in enumerate(pgn.mainline_moves(), start=1):
+            is_capture = board.is_capture(move)
+            board.push(move)
+            positions.append((board.copy(), move))
+            moves_data.append((is_capture, idx))
+
+        return positions, moves_data
+
+    except Exception as e:
+        logger.error(f"Error parsing PGN: {e}")
+        return [], []
+
+
 def generate_game_video(
     pgn_str: str,
     evaluations: Optional[list[float]] = None,
@@ -821,7 +860,8 @@ def generate_game_video(
         logger.error("imageio not installed. Run: pip install imageio[ffmpeg]")
         return None
 
-    positions = parse_pgn_positions(pgn_str)
+    # Parse PGN with capture info for audio
+    positions, moves_data = parse_pgn_with_captures(pgn_str)
     if not positions:
         logger.error("No positions found in PGN")
         return None
@@ -866,6 +906,17 @@ def generate_game_video(
 
         # Read the video bytes
         video_bytes = tmp_path.read_bytes()
+
+        # Add audio if enabled
+        if ENABLE_VIDEO_AUDIO and moves_data:
+            try:
+                from utils.audio import add_audio_to_video
+                logger.info("Adding audio to video...")
+                video_bytes = add_audio_to_video(video_bytes, moves_data, frame_duration_ms)
+                logger.info("Audio added successfully")
+            except Exception as e:
+                logger.warning(f"Failed to add audio: {e}")
+                # Continue with silent video
 
         # Record stats
         if track_stats:
