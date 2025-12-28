@@ -1,5 +1,7 @@
+import hashlib
 import io
 import logging
+import time
 from typing import Optional
 
 import discord
@@ -15,6 +17,12 @@ from utils.helpers import (
 from utils.video import generate_game_video_async
 
 logger = logging.getLogger(__name__)
+
+# Video cache for multi-server optimization
+# Key: PGN hash, Value: (video_bytes, timestamp)
+# Expires after 5 minutes (enough time for all guild notifications to complete)
+_video_cache: dict[str, tuple[bytes, float]] = {}
+_VIDEO_CACHE_TTL = 300  # 5 minutes
 
 
 class NotificationService:
@@ -129,14 +137,30 @@ class NotificationService:
         file = None
         if pgn and not DISABLE_VIDEO:
             try:
-                logger.info(f"Generating video for {player.username}'s game...")
-                video_bytes = await generate_game_video_async(pgn)
+                # Check video cache first (for multi-server optimization)
+                pgn_hash = hashlib.md5(pgn.encode()).hexdigest()
+                now = time.time()
+
+                # Clean expired entries
+                expired = [k for k, (_, ts) in _video_cache.items() if now - ts > _VIDEO_CACHE_TTL]
+                for k in expired:
+                    del _video_cache[k]
+
+                if pgn_hash in _video_cache:
+                    video_bytes, _ = _video_cache[pgn_hash]
+                    logger.info(f"Using cached video for {player.username}'s game")
+                else:
+                    logger.info(f"Generating video for {player.username}'s game...")
+                    video_bytes = await generate_game_video_async(pgn)
+                    if video_bytes:
+                        _video_cache[pgn_hash] = (video_bytes, now)
+                        logger.info(f"Video generated and cached for {player.username}'s game")
+
                 if video_bytes:
                     file = discord.File(
                         io.BytesIO(video_bytes),
                         filename=f"game_{game.game_id}.mp4",
                     )
-                    logger.info(f"Video generated for {player.username}'s game")
             except Exception as e:
                 logger.error(f"Failed to generate video: {e}")
 

@@ -8,6 +8,7 @@ from api.base import GameData
 from config import POLL_INTERVAL, Platform
 from database import DatabaseManager, Game, TrackedPlayer
 from utils.accuracy import calculate_accuracy_from_pgn
+from utils.video import get_eval_cache
 
 if TYPE_CHECKING:
     from services.notifications import NotificationService
@@ -55,6 +56,8 @@ class GameTracker:
                 logger.debug("Starting poll cycle...")
                 await self._poll_all_players()
                 logger.debug("Poll cycle complete")
+                # Save evaluation cache if modified
+                get_eval_cache().save_if_dirty()
             except Exception as e:
                 logger.error(f"Error in tracking loop: {e}", exc_info=True)
 

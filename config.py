@@ -71,3 +71,6 @@ SKIP_OPENING_MOVES = int(os.getenv("SKIP_OPENING_MOVES", "0"))
 
 # Enable move/capture sounds in videos (requires ffmpeg)
 ENABLE_VIDEO_AUDIO = os.getenv("ENABLE_VIDEO_AUDIO", "true").lower() == "true"
+
+# Evaluation cache file path
+EVAL_CACHE_PATH = os.getenv("EVAL_CACHE_PATH", "./data/eval_cache.json")

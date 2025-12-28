@@ -15,8 +15,9 @@ import sys
 import discord
 from discord.ext import commands
 
-from config import DATABASE_PATH, DISCORD_TOKEN, LOG_LEVEL
+from config import DATABASE_PATH, DISCORD_TOKEN, EVAL_CACHE_PATH, LOG_LEVEL
 from database import DatabaseManager
+from utils.video import get_eval_cache
 from services.daily_summary import SummaryService
 from services.notifications import NotificationService
 from services.tracker import GameTracker
@@ -67,6 +68,10 @@ class ChessTrackerBot(commands.Bot):
     async def setup_hook(self):
         """Initialize services and load cogs."""
         logger.info("Initializing services...")
+
+        # Load evaluation cache from file
+        eval_cache = get_eval_cache()
+        eval_cache.load_from_file(EVAL_CACHE_PATH)
 
         # Initialize database
         self.db = DatabaseManager(DATABASE_PATH)
@@ -132,6 +137,10 @@ class ChessTrackerBot(commands.Bot):
     async def close(self):
         """Cleanup on shutdown."""
         logger.info("Shutting down...")
+
+        # Save evaluation cache to file
+        eval_cache = get_eval_cache()
+        eval_cache.save_to_file(EVAL_CACHE_PATH)
 
         if self.tracker:
             await self.tracker.stop()

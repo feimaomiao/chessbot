@@ -1,6 +1,7 @@
 """Video generation for chess game replays with evaluation bar."""
 
 import io
+import json
 import logging
 import os
 import tempfile
@@ -90,6 +91,8 @@ class EvalCache:
         self._lock = threading.Lock()
         self._hits = 0
         self._misses = 0
+        self._file_path: Optional[str] = None
+        self._dirty = False
 
     def get(self, fen: str) -> Optional[float]:
         """Get cached evaluation for a FEN position."""
@@ -112,6 +115,7 @@ class EvalCache:
                     # Remove oldest (least recently used)
                     self._cache.popitem(last=False)
                 self._cache[fen] = score
+                self._dirty = True
 
     def get_stats(self) -> dict:
         """Get cache statistics."""
@@ -131,6 +135,57 @@ class EvalCache:
             self._cache.clear()
             self._hits = 0
             self._misses = 0
+
+    def save_to_file(self, file_path: Optional[str] = None) -> bool:
+        """Save cache to a JSON file. Returns True on success."""
+        file_path = file_path or self._file_path
+        if not file_path:
+            return False
+        try:
+            Path(file_path).parent.mkdir(parents=True, exist_ok=True)
+            with self._lock:
+                data = {
+                    "cache": dict(self._cache),
+                    "hits": self._hits,
+                    "misses": self._misses,
+                }
+                self._dirty = False
+            with open(file_path, "w") as f:
+                json.dump(data, f)
+            logger.debug(f"Saved {len(self._cache)} cache entries to {file_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save cache to {file_path}: {e}")
+            return False
+
+    def load_from_file(self, file_path: str) -> bool:
+        """Load cache from a JSON file. Returns True on success."""
+        self._file_path = file_path
+        try:
+            if not Path(file_path).exists():
+                logger.info(f"No cache file found at {file_path}")
+                return False
+            with open(file_path, "r") as f:
+                data = json.load(f)
+            with self._lock:
+                self._cache = OrderedDict(data.get("cache", {}))
+                self._hits = data.get("hits", 0)
+                self._misses = data.get("misses", 0)
+                self._dirty = False
+                # Trim to maxsize if needed (keep most recent)
+                while len(self._cache) > self._maxsize:
+                    self._cache.popitem(last=False)
+            logger.info(f"Loaded {len(self._cache)} cache entries from {file_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to load cache from {file_path}: {e}")
+            return False
+
+    def save_if_dirty(self) -> bool:
+        """Save cache to file only if it has been modified. Returns True if saved."""
+        if self._dirty and self._file_path:
+            return self.save_to_file()
+        return False
 
 
 # Global evaluation cache
