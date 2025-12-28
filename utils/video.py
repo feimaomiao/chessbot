@@ -355,7 +355,9 @@ class StockfishEvaluator:
                         results.append(cached)
                         cache_hits += 1
                     else:
-                        result = self.evaluate(board)
+                        # Skip cache check in evaluate() since we just checked
+                        result = self.evaluate(board, use_cache=False)
+                        cache.set(fen, result)
                         results.append(result)
             else:
                 results, cache_hits = self._evaluate_parallel(positions)
