@@ -1,17 +1,21 @@
 import logging
+import os
 from datetime import datetime, timedelta
 
 import discord
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
 
 from database import DatabaseManager
 from utils.helpers import format_platform_name, format_rating_change
 
 logger = logging.getLogger(__name__)
 
-# Summary interval in minutes
-SUMMARY_INTERVAL_MINUTES = 10
+# Summary schedule configuration
+# SUMMARY_HOUR: Hour to send daily summary (0-23, UTC). Default: 0 (midnight)
+# SUMMARY_MINUTE: Minute to send daily summary (0-59). Default: 0
+SUMMARY_HOUR = int(os.getenv("SUMMARY_HOUR", "0"))
+SUMMARY_MINUTE = int(os.getenv("SUMMARY_MINUTE", "0"))
 
 
 class SummaryService:
@@ -24,16 +28,16 @@ class SummaryService:
         self._job = None
 
     async def start(self):
-        """Start the scheduler for periodic summaries."""
-        # Schedule summary job every 10 minutes
+        """Start the scheduler for daily summaries."""
+        # Schedule daily summary at configured time (default: 00:00 UTC)
         self._job = self.scheduler.add_job(
             self._send_all_summaries,
-            IntervalTrigger(minutes=SUMMARY_INTERVAL_MINUTES),
-            id="periodic_summary",
+            CronTrigger(hour=SUMMARY_HOUR, minute=SUMMARY_MINUTE),
+            id="daily_summary",
         )
 
         self.scheduler.start()
-        logger.info(f"Summary service started (every {SUMMARY_INTERVAL_MINUTES} minutes)")
+        logger.info(f"Summary service started (daily at {SUMMARY_HOUR:02d}:{SUMMARY_MINUTE:02d} UTC)")
 
     def stop(self):
         """Stop the scheduler."""
@@ -75,14 +79,14 @@ class SummaryService:
         if not players:
             return
 
-        # Generate summary for the last interval period
-        embed = await self._generate_summary_embed(players)
+        # Generate daily summary (last 24 hours)
+        embed = await self._generate_daily_summary_embed(players)
 
         # Only send if there's activity
-        if embed:
+        if embed and embed.fields:  # Has activity if there are fields
             try:
                 await channel.send(embed=embed)
-                logger.info(f"Sent summary for guild {guild_id}")
+                logger.info(f"Sent daily summary for guild {guild_id}")
             except Exception as e:
                 logger.error(f"Failed to send summary: {e}")
 
