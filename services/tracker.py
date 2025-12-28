@@ -91,6 +91,8 @@ class GameTracker:
         chesscom_groups = {k: v for k, v in player_groups.items() if k[0] == Platform.CHESSCOM}
         lichess_groups = {k: v for k, v in player_groups.items() if k[0] == Platform.LICHESS}
 
+        total_new_games = 0
+
         # Poll Chess.com users in parallel (one API call per unique user)
         if chesscom_groups:
             logger.debug(f"Polling {len(chesscom_groups)} unique Chess.com user(s)")
@@ -102,6 +104,8 @@ class GameTracker:
             for (platform, username), result in zip(chesscom_groups.keys(), results):
                 if isinstance(result, Exception):
                     logger.error(f"Error polling {username} on Chess.com: {result}")
+                elif isinstance(result, int):
+                    total_new_games += result
 
         # Poll Lichess users in parallel (one API call per unique user)
         if lichess_groups:
@@ -114,9 +118,18 @@ class GameTracker:
             for (platform, username), result in zip(lichess_groups.keys(), results):
                 if isinstance(result, Exception):
                     logger.error(f"Error polling {username} on Lichess: {result}")
+                elif isinstance(result, int):
+                    total_new_games += result
 
-    async def _poll_user_group(self, players: list[TrackedPlayer], client):
-        """Poll a unique user and process games for all their trackers."""
+        if total_new_games == 0:
+            logger.info("No new games found")
+
+    async def _poll_user_group(self, players: list[TrackedPlayer], client) -> int:
+        """Poll a unique user and process games for all their trackers.
+
+        Returns:
+            Number of new games found.
+        """
         # Use first player for API call (all have same username/platform)
         representative = players[0]
         username = representative.username
@@ -149,6 +162,8 @@ class GameTracker:
             for game_data in games:
                 for player in players:
                     await self._process_game(player, game_data)
+
+            return len(games)
 
         except Exception as e:
             logger.error(f"Error polling {username} on {platform}: {e}", exc_info=True)
