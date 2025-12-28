@@ -397,15 +397,15 @@ class StockfishEvaluator:
                 uncached_tasks.append((i, board, fen, turn_perspective_supported))
 
         cache_hits = len(positions) - len(uncached_tasks)
+        cache_misses = len(uncached_tasks)
 
         # If all cached, return early
         if not uncached_tasks:
-            logger.info(f"All {len(positions)} positions found in cache")
+            logger.info(f"All {len(positions)} positions found in cache (0 misses)")
             return results, cache_hits
 
         logger.info(
-            f"Cache: {cache_hits}/{len(positions)} hits, "
-            f"evaluating {len(uncached_tasks)} positions"
+            f"Cache: {cache_hits} hits, {cache_misses} misses out of {len(positions)} positions"
         )
 
         try:
@@ -916,7 +916,6 @@ def generate_game_video(
         MP4 video as bytes, or None if generation fails
     """
     start_time = time.perf_counter()
-    video_cache_hits = 0
 
     try:
         import imageio.v3 as iio
@@ -936,8 +935,9 @@ def generate_game_video(
         if evaluator.available:
             logger.info(f"Evaluating {len(positions)} positions with Stockfish...")
             boards = [board for board, _ in positions]
-            # Don't double-track stats from evaluate_positions
-            evaluations, video_cache_hits = evaluator.evaluate_positions(boards, track_stats=False)
+            # Don't track stats here - accuracy calculation already tracked them
+            # and this evaluation will always be 100% cached
+            evaluations, _ = evaluator.evaluate_positions(boards, track_stats=False)
             logger.info("Stockfish evaluation complete")
         else:
             logger.info("Stockfish not available, using material evaluation")
@@ -982,11 +982,11 @@ def generate_game_video(
                 logger.warning(f"Failed to add audio: {e}")
                 # Continue with silent video
 
-        # Record stats
+        # Record video timing stats (cache stats are tracked during accuracy calculation)
         if track_stats:
             elapsed_ms = (time.perf_counter() - start_time) * 1000
             tracker = get_stats_tracker()
-            tracker.record_video_generation(len(positions), elapsed_ms, video_cache_hits)
+            tracker.record_video_timing(len(positions), elapsed_ms)
 
         return video_bytes
 

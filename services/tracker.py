@@ -7,7 +7,7 @@ from api import ChessComClient, LichessClient
 from api.base import GameData
 from config import POLL_INTERVAL, Platform
 from database import DatabaseManager, Game, TrackedPlayer
-from utils.accuracy import calculate_accuracy_from_pgn
+from utils.accuracy import evaluate_game_positions, calculate_accuracy_from_evaluations
 from utils.video import get_eval_cache
 
 if TYPE_CHECKING:
@@ -213,13 +213,16 @@ class GameTracker:
         # Fetch PGN for accuracy calculation and video generation
         pgn = await self._fetch_game_pgn(player, game_data.game_id)
 
-        # Calculate accuracy from PGN
+        # Evaluate positions once (used for both accuracy and video)
+        evaluations = None
         accuracy = None
         if pgn:
             try:
-                accuracy = await calculate_accuracy_from_pgn(pgn, game_data.player_color)
-                if accuracy:
-                    logger.info(f"Calculated accuracy for {player.username}: {accuracy}%")
+                evaluations = await evaluate_game_positions(pgn)
+                if evaluations:
+                    accuracy = calculate_accuracy_from_evaluations(evaluations, game_data.player_color)
+                    if accuracy:
+                        logger.info(f"Calculated accuracy for {player.username}: {accuracy}%")
             except Exception as e:
                 logger.error(f"Error calculating accuracy: {e}")
 
@@ -249,8 +252,8 @@ class GameTracker:
         if saved_game:
             logger.info(f"New game recorded: {player.username} vs {game_data.opponent}")
 
-            # Send notification with video
-            await self.notification_service.send_game_notification(player, saved_game, pgn)
+            # Send notification with video (pass evaluations to avoid re-evaluation)
+            await self.notification_service.send_game_notification(player, saved_game, pgn, evaluations)
 
             # Mark as notified
             await self.db.mark_game_notified(saved_game.id)

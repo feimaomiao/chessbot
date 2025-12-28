@@ -109,25 +109,22 @@ def calculate_game_accuracy(
         return None
 
 
-def _evaluate_positions_sync(boards: list, evaluator) -> list[float]:
+def _evaluate_positions_sync(boards: list, evaluator) -> tuple[list[float], int]:
     """Synchronous helper for running evaluation in a thread."""
-    evaluations, _ = evaluator.evaluate_positions(boards, parallel=True, track_stats=False)
-    return evaluations
+    # Track stats here since this is where real cache activity happens
+    evaluations, cache_hits = evaluator.evaluate_positions(boards, parallel=True, track_stats=True)
+    return evaluations, cache_hits
 
 
-async def calculate_accuracy_from_pgn(
-    pgn: str,
-    player_color: str,
-) -> Optional[float]:
+async def evaluate_game_positions(pgn: str) -> Optional[list[float]]:
     """
-    Calculate accuracy for a game from its PGN.
+    Evaluate all positions in a game from PGN.
 
     Args:
         pgn: PGN string of the game
-        player_color: "white" or "black"
 
     Returns:
-        Accuracy percentage (0-100), or None if calculation fails
+        List of centipawn evaluations, or None if evaluation fails
     """
     if not pgn:
         return None
@@ -142,18 +139,56 @@ async def calculate_accuracy_from_pgn(
     # Get evaluations using Stockfish
     evaluator = get_stockfish_evaluator()
     if not evaluator.available:
-        logger.warning("Stockfish not available for accuracy calculation")
+        logger.warning("Stockfish not available for evaluation")
         return None
 
     try:
         # Run blocking evaluation in a thread pool to avoid blocking the event loop
-        evaluations = await asyncio.to_thread(
+        evaluations, _ = await asyncio.to_thread(
             _evaluate_positions_sync, boards, evaluator
         )
-
-        # Calculate accuracy
-        return calculate_game_accuracy(evaluations, player_color)
+        return evaluations
 
     except Exception as e:
-        logger.error(f"Error calculating accuracy: {e}")
+        logger.error(f"Error evaluating positions: {e}")
         return None
+
+
+def calculate_accuracy_from_evaluations(
+    evaluations: list[float],
+    player_color: str,
+) -> Optional[float]:
+    """
+    Calculate accuracy from pre-computed evaluations.
+
+    Args:
+        evaluations: List of centipawn evaluations for each position
+        player_color: "white" or "black"
+
+    Returns:
+        Accuracy percentage (0-100), or None if calculation fails
+    """
+    return calculate_game_accuracy(evaluations, player_color)
+
+
+async def calculate_accuracy_from_pgn(
+    pgn: str,
+    player_color: str,
+) -> Optional[float]:
+    """
+    Calculate accuracy for a game from its PGN.
+
+    Note: If you need both evaluations and accuracy, use evaluate_game_positions()
+    followed by calculate_accuracy_from_evaluations() to avoid double evaluation.
+
+    Args:
+        pgn: PGN string of the game
+        player_color: "white" or "black"
+
+    Returns:
+        Accuracy percentage (0-100), or None if calculation fails
+    """
+    evaluations = await evaluate_game_positions(pgn)
+    if evaluations is None:
+        return None
+    return calculate_game_accuracy(evaluations, player_color)

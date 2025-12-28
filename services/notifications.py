@@ -36,7 +36,8 @@ class NotificationService:
         self.db = db
 
     async def send_game_notification(
-        self, player: TrackedPlayer, game: Game, pgn: Optional[str] = None
+        self, player: TrackedPlayer, game: Game, pgn: Optional[str] = None,
+        evaluations: Optional[list[float]] = None
     ):
         """Send a notification for a completed game."""
         # Get guild settings
@@ -59,7 +60,7 @@ class NotificationService:
                 return
 
         # Create embed and file (video if PGN available, otherwise static image)
-        embed, file = await self.create_game_message(player, game, pgn)
+        embed, file = await self.create_game_message(player, game, pgn, evaluations)
 
         # Ping linked Discord member if set
         content = None
@@ -75,7 +76,8 @@ class NotificationService:
             logger.error(f"Failed to send notification: {e}")
 
     async def create_game_message(
-        self, player: TrackedPlayer, game: Game, pgn: Optional[str] = None
+        self, player: TrackedPlayer, game: Game, pgn: Optional[str] = None,
+        evaluations: Optional[list[float]] = None
     ) -> tuple[discord.Embed, discord.File | None]:
         """Create an embed and video/image for a game notification."""
         display_name = player.display_name or player.username
@@ -164,7 +166,8 @@ class NotificationService:
                         logger.info(f"Using cached video for {player.username}'s game")
                     else:
                         logger.info(f"Generating video for {player.username}'s game...")
-                        video_bytes = await generate_game_video_async(pgn)
+                        # Pass pre-computed evaluations to avoid re-evaluation
+                        video_bytes = await generate_game_video_async(pgn, evaluations=evaluations)
                         if video_bytes:
                             _video_cache[pgn_hash] = (video_bytes, now)
                             logger.info(f"Video generated and cached for {player.username}'s game")

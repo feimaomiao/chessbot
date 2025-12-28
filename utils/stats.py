@@ -150,11 +150,17 @@ class StatsTracker:
             self._save_stats()
 
     def record_video_generation(self, positions: int, time_ms: float, cache_hits: int):
-        """Record a video generation operation."""
+        """Record a video generation operation with cache stats."""
         with self._lock:
             self._stats.video_generation.record(positions, time_ms)
             self._stats.total_cache_hits += cache_hits
             self._stats.total_cache_misses += positions - cache_hits
+            self._save_stats()
+
+    def record_video_timing(self, positions: int, time_ms: float):
+        """Record video generation timing only (no cache stats)."""
+        with self._lock:
+            self._stats.video_generation.record(positions, time_ms)
             self._save_stats()
 
     def get_stats(self) -> PerformanceStats:
