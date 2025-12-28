@@ -649,6 +649,28 @@ class TrackingCog(commands.Cog):
                 inline=False,
             )
 
+        # Termination breakdown (only show non-zero values)
+        termination_parts = []
+        if result.termination_checkmate > 0:
+            termination_parts.append(f"Checkmate: {result.termination_checkmate}")
+        if result.termination_resign > 0:
+            termination_parts.append(f"Resignation: {result.termination_resign}")
+        if result.termination_timeout > 0:
+            termination_parts.append(f"Timeout: {result.termination_timeout}")
+        if result.termination_stalemate > 0:
+            termination_parts.append(f"Stalemate: {result.termination_stalemate}")
+        if result.termination_repetition > 0:
+            termination_parts.append(f"Repetition: {result.termination_repetition}")
+        if result.termination_agreed > 0:
+            termination_parts.append(f"Draw Agreement: {result.termination_agreed}")
+
+        if termination_parts:
+            embed.add_field(
+                name="Game Endings",
+                value=" | ".join(termination_parts),
+                inline=False,
+            )
+
         # Top openings as white
         if result.top_openings_white:
             lines = []

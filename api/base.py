@@ -28,6 +28,7 @@ class GameData:
     final_fen: Optional[str] = None  # Final board position
     opening_name: Optional[str] = None  # Opening name (e.g., "Sicilian Defense")
     opening_eco: Optional[str] = None  # ECO code (e.g., "B20")
+    termination: Optional[str] = None  # How game ended: checkmate, timeout, resign, aborted, agreed, stalemate, repetition
 
 
 class BaseChessClient(ABC):

@@ -46,3 +46,4 @@ class Game:
     final_fen: Optional[str] = None  # Final board position
     notified: bool = False
     accuracy: Optional[float] = None  # Player's accuracy percentage (0-100)
+    termination: Optional[str] = None  # How game ended: checkmate, timeout, resign, aborted, agreed, stalemate, repetition

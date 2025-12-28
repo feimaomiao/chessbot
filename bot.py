@@ -23,6 +23,7 @@ from services.notifications import NotificationService
 from services.tracker import GameTracker
 from cogs.tracking import TrackingCog
 from cogs.admin import AdminCog
+from utils.helpers import infer_termination_from_fen
 
 # Setup logging
 LOG_DIR = Path("./logs")
@@ -82,6 +83,9 @@ class ChessTrackerBot(commands.Bot):
         await self.db.connect()
         logger.info("Database connected")
 
+        # Backfill termination for existing games (checkmate/stalemate only)
+        await self._backfill_terminations()
+
         # Initialize services
         self.notification_service = NotificationService(self, self.db)
         self.tracker = GameTracker(self.db, self.notification_service)
@@ -96,6 +100,26 @@ class ChessTrackerBot(commands.Bot):
         logger.info("Syncing slash commands...")
         await self.tree.sync()
         logger.info("Slash commands synced")
+
+    async def _backfill_terminations(self):
+        """Backfill termination field for existing games using FEN analysis.
+
+        Only checkmate and stalemate can be detected from FEN.
+        Other terminations require API data and cannot be backfilled.
+        """
+        games = await self.db.get_games_without_termination()
+        if not games:
+            return
+
+        updated = 0
+        for game in games:
+            termination = infer_termination_from_fen(game.final_fen, game.result)
+            if termination:
+                await self.db.update_game_termination(game.id, termination)
+                updated += 1
+
+        if updated > 0:
+            logger.info(f"Backfilled termination for {updated} game(s)")
 
     async def on_ready(self):
         """Called when the bot is ready."""

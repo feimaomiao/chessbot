@@ -124,9 +124,27 @@ class NotificationService:
             url=game.game_url,
         )
 
+        # Format termination for display
+        termination_display = None
+        if game.termination and game.termination != "unknown":
+            termination_map = {
+                "checkmate": "Checkmate",
+                "timeout": "Timeout",
+                "resign": "Resignation",
+                "aborted": "Aborted",
+                "agreed": "Draw Agreement",
+                "stalemate": "Stalemate",
+                "repetition": "Repetition",
+            }
+            termination_display = termination_map.get(game.termination, game.termination.capitalize())
+
         # Game info in description
+        result_text = f"{result_emoji} **{game.result.capitalize()}**"
+        if termination_display:
+            result_text += f" by {termination_display}"
+
         description_lines = [
-            f"{result_emoji} **{game.result.capitalize()}**",
+            result_text,
             f"**Format:** {tc_emoji} {game.time_control.capitalize()} ({game.time_control_display})",
             f"**Rating:** {game.rating_after} ({rating_change_str})",
         ]

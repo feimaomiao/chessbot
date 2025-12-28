@@ -61,6 +61,7 @@ class DatabaseManager:
                 final_fen TEXT,
                 notified BOOLEAN DEFAULT 0,
                 accuracy REAL,
+                termination TEXT,
                 FOREIGN KEY (player_id) REFERENCES tracked_players(id),
                 UNIQUE(player_id, game_id)
             );
@@ -84,6 +85,15 @@ class DatabaseManager:
         try:
             await self._connection.execute(
                 "ALTER TABLE games ADD COLUMN accuracy REAL"
+            )
+            await self._connection.commit()
+        except Exception:
+            pass  # Column already exists
+
+        # Migration: Add termination column if it doesn't exist
+        try:
+            await self._connection.execute(
+                "ALTER TABLE games ADD COLUMN termination TEXT"
             )
             await self._connection.commit()
         except Exception:
@@ -225,12 +235,13 @@ class DatabaseManager:
                 """INSERT INTO games
                    (player_id, game_id, platform, time_control, time_control_display,
                     result, player_color, rating_after, rating_change, opponent, opponent_rating,
-                    played_at, game_url, final_fen, notified, accuracy)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    played_at, game_url, final_fen, notified, accuracy, termination)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (game.player_id, game.game_id, game.platform, game.time_control,
                  game.time_control_display, game.result, game.player_color, game.rating_after,
                  game.rating_change, game.opponent, game.opponent_rating,
-                 game.played_at, game.game_url, game.final_fen, game.notified, game.accuracy),
+                 game.played_at, game.game_url, game.final_fen, game.notified, game.accuracy,
+                 game.termination),
             )
             await self._connection.commit()
             game.id = cursor.lastrowid
@@ -251,6 +262,23 @@ class DatabaseManager:
             "UPDATE games SET accuracy = ? WHERE id = ?", (accuracy, game_id)
         )
         await self._connection.commit()
+
+    async def update_game_termination(self, game_id: int, termination: str):
+        """Update the termination for a game."""
+        await self._connection.execute(
+            "UPDATE games SET termination = ? WHERE id = ?", (termination, game_id)
+        )
+        await self._connection.commit()
+
+    async def get_games_without_termination(self) -> list[Game]:
+        """Get all games that don't have termination set."""
+        cursor = await self._connection.execute(
+            """SELECT * FROM games
+               WHERE termination IS NULL AND final_fen IS NOT NULL
+               ORDER BY played_at DESC"""
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_game(row) for row in rows]
 
     async def get_games_without_accuracy(self) -> list[Game]:
         """Get all games that don't have accuracy calculated."""
@@ -466,4 +494,5 @@ class DatabaseManager:
             final_fen=row["final_fen"],
             notified=bool(row["notified"]),
             accuracy=row["accuracy"] if "accuracy" in row.keys() else None,
+            termination=row["termination"] if "termination" in row.keys() else None,
         )

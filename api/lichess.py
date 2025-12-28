@@ -139,6 +139,9 @@ class LichessClient(BaseChessClient):
             opening_name = opening_data.get("name") if opening_data else None
             opening_eco = opening_data.get("eco") if opening_data else None
 
+            # Parse termination
+            termination = self._parse_termination(data.get("status", ""))
+
             return GameData(
                 game_id=game_id,
                 platform=self.PLATFORM,
@@ -155,10 +158,40 @@ class LichessClient(BaseChessClient):
                 final_fen=final_fen,
                 opening_name=opening_name,
                 opening_eco=opening_eco,
+                termination=termination,
             )
         except Exception as e:
             logger.error(f"Error parsing Lichess game: {e}")
             return None
+
+    def _parse_termination(self, status: str) -> str:
+        """
+        Parse termination reason from Lichess status field.
+
+        Args:
+            status: Lichess game status string
+
+        Returns:
+            Standardized termination: checkmate, timeout, resign, aborted, agreed, stalemate, repetition
+        """
+        status_lower = status.lower()
+
+        if status_lower == "mate":
+            return "checkmate"
+        elif status_lower == "resign":
+            return "resign"
+        elif status_lower == "stalemate":
+            return "stalemate"
+        elif status_lower in ("timeout", "outoftime"):
+            return "timeout"
+        elif status_lower in ("draw", "50move", "insufficient"):
+            return "agreed"
+        elif status_lower == "threefoldrepetition":
+            return "repetition"
+        elif status_lower in ("nostart", "aborted", "cheat"):
+            return "aborted"
+
+        return "unknown"
 
     async def get_player_info(self, username: str) -> Optional[dict]:
         """Get player profile information from Lichess."""

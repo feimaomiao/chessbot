@@ -245,6 +245,7 @@ class GameTracker:
             final_fen=game_data.final_fen,
             notified=False,
             accuracy=accuracy,
+            termination=game_data.termination,
         )
 
         # Store in database
@@ -334,6 +335,7 @@ class GameTracker:
                     game_url=game_data.game_url,
                     final_fen=game_data.final_fen,
                     notified=True,  # Mark as notified to avoid sending notifications
+                    termination=game_data.termination,
                 )
 
                 saved = await self.db.add_game(game)

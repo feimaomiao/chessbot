@@ -63,6 +63,16 @@ class AnalysisResult:
     avg_accuracy: Optional[float] = None
     games_with_accuracy: int = 0
 
+    # Termination stats
+    termination_checkmate: int = 0
+    termination_timeout: int = 0
+    termination_resign: int = 0
+    termination_stalemate: int = 0
+    termination_repetition: int = 0
+    termination_agreed: int = 0
+    termination_aborted: int = 0
+    termination_unknown: int = 0
+
     @property
     def rating_change(self) -> int:
         """Total rating change over the period."""
@@ -111,6 +121,18 @@ def analyze_games(games: list[GameData]) -> AnalysisResult:
     white_games = white_wins = white_losses = white_draws = 0
     black_games = black_wins = black_losses = black_draws = 0
 
+    # Termination counters
+    termination_counts = {
+        "checkmate": 0,
+        "timeout": 0,
+        "resign": 0,
+        "stalemate": 0,
+        "repetition": 0,
+        "agreed": 0,
+        "aborted": 0,
+        "unknown": 0,
+    }
+
     # Opening tracking: {opening_name: OpeningStats}
     openings_white: dict[str, OpeningStats] = defaultdict(
         lambda: OpeningStats(name="", eco=None)
@@ -126,6 +148,13 @@ def analyze_games(games: list[GameData]) -> AnalysisResult:
         # Track ratings
         if game.rating_after > 0:
             ratings.append(game.rating_after)
+
+        # Track termination
+        termination = getattr(game, 'termination', None) or "unknown"
+        if termination in termination_counts:
+            termination_counts[termination] += 1
+        else:
+            termination_counts["unknown"] += 1
 
         # Color stats
         is_white = game.player_color == "white"
@@ -215,6 +244,14 @@ def analyze_games(games: list[GameData]) -> AnalysisResult:
         ending_rating=ending_rating,
         rating_high=rating_high,
         rating_low=rating_low,
+        termination_checkmate=termination_counts["checkmate"],
+        termination_timeout=termination_counts["timeout"],
+        termination_resign=termination_counts["resign"],
+        termination_stalemate=termination_counts["stalemate"],
+        termination_repetition=termination_counts["repetition"],
+        termination_agreed=termination_counts["agreed"],
+        termination_aborted=termination_counts["aborted"],
+        termination_unknown=termination_counts["unknown"],
     )
 
 

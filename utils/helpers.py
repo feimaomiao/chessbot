@@ -1,3 +1,7 @@
+from typing import Optional
+
+import chess
+
 from config import TIME_CONTROL_THRESHOLDS
 
 def parse_time_control(time_control_str: str) -> tuple[str, str]:
@@ -75,3 +79,35 @@ def format_platform_name(platform: str) -> str:
         "chesscom": "Chess.com",
         "lichess": "Lichess",
     }.get(platform, platform)
+
+
+def infer_termination_from_fen(fen: str, result: str) -> Optional[str]:
+    """
+    Infer game termination from final FEN position and result.
+
+    Can only detect checkmate and stalemate from the board position.
+    Other terminations (timeout, resign, agreed) cannot be inferred.
+
+    Args:
+        fen: The final board position in FEN notation
+        result: The game result ('win', 'loss', 'draw')
+
+    Returns:
+        'checkmate' or 'stalemate' if detectable, None otherwise
+    """
+    if not fen:
+        return None
+
+    try:
+        board = chess.Board(fen)
+
+        # Check if the position has no legal moves
+        if not any(board.legal_moves):
+            if board.is_checkmate():
+                return "checkmate"
+            elif board.is_stalemate():
+                return "stalemate"
+
+        return None
+    except Exception:
+        return None

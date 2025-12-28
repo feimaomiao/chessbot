@@ -70,7 +70,11 @@ class ChessComClient(BaseChessClient):
 
             # Parse result
             player_result = player_data.get("result", "")
+            opponent_result = opponent_data.get("result", "")
             result = self._parse_result(player_result)
+
+            # Parse termination
+            termination = self._parse_termination(player_result, opponent_result)
 
             # Parse time control
             time_control_str = data.get("time_control", "")
@@ -107,6 +111,7 @@ class ChessComClient(BaseChessClient):
                 final_fen=final_fen,
                 opening_name=opening_name,
                 opening_eco=opening_eco,
+                termination=termination,
             )
         except Exception as e:
             logger.error(f"Error parsing Chess.com game: {e}")
@@ -185,6 +190,41 @@ class ChessComClient(BaseChessClient):
             if "win" in result_lower:
                 return GameResult.WIN
             return GameResult.LOSS
+
+    def _parse_termination(self, player_result: str, opponent_result: str) -> str:
+        """
+        Parse termination reason from Chess.com result strings.
+
+        Args:
+            player_result: The tracked player's result string
+            opponent_result: The opponent's result string
+
+        Returns:
+            Standardized termination: checkmate, timeout, resign, aborted, agreed, stalemate, repetition
+        """
+        # Check both results to determine termination
+        # The loser's result is more descriptive (e.g., "checkmated" vs "win")
+        results = [player_result.lower(), opponent_result.lower()]
+
+        # Check for specific termination types
+        for r in results:
+            if r == "checkmated":
+                return "checkmate"
+            elif r == "timeout":
+                return "timeout"
+            elif r == "resigned":
+                return "resign"
+            elif r in ("abandoned", "aborted"):
+                return "aborted"
+            elif r == "stalemate":
+                return "stalemate"
+            elif r == "repetition":
+                return "repetition"
+            elif r in ("agreed", "50move", "insufficient", "timevsinsufficient"):
+                return "agreed"
+
+        # Default fallback
+        return "unknown"
 
     def _get_final_fen(self, pgn_str: str) -> Optional[str]:
         """Parse PGN and return the final board position as FEN."""
