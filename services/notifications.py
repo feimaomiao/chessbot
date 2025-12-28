@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import io
 import logging
@@ -23,6 +24,8 @@ logger = logging.getLogger(__name__)
 # Expires after 5 minutes (enough time for all guild notifications to complete)
 _video_cache: dict[str, tuple[bytes, float]] = {}
 _VIDEO_CACHE_TTL = 300  # 5 minutes
+_video_cache_locks: dict[str, asyncio.Lock] = {}
+_video_cache_master_lock = asyncio.Lock()
 
 
 class NotificationService:
@@ -139,22 +142,32 @@ class NotificationService:
             try:
                 # Check video cache first (for multi-server optimization)
                 pgn_hash = hashlib.md5(pgn.encode()).hexdigest()
-                now = time.time()
 
-                # Clean expired entries
-                expired = [k for k, (_, ts) in _video_cache.items() if now - ts > _VIDEO_CACHE_TTL]
-                for k in expired:
-                    del _video_cache[k]
+                # Get or create a lock for this specific PGN
+                async with _video_cache_master_lock:
+                    if pgn_hash not in _video_cache_locks:
+                        _video_cache_locks[pgn_hash] = asyncio.Lock()
+                    pgn_lock = _video_cache_locks[pgn_hash]
 
-                if pgn_hash in _video_cache:
-                    video_bytes, _ = _video_cache[pgn_hash]
-                    logger.info(f"Using cached video for {player.username}'s game")
-                else:
-                    logger.info(f"Generating video for {player.username}'s game...")
-                    video_bytes = await generate_game_video_async(pgn)
-                    if video_bytes:
-                        _video_cache[pgn_hash] = (video_bytes, now)
-                        logger.info(f"Video generated and cached for {player.username}'s game")
+                # Acquire lock for this PGN - only one task generates, others wait
+                async with pgn_lock:
+                    now = time.time()
+
+                    # Clean expired entries
+                    expired = [k for k, (_, ts) in _video_cache.items() if now - ts > _VIDEO_CACHE_TTL]
+                    for k in expired:
+                        del _video_cache[k]
+                        _video_cache_locks.pop(k, None)
+
+                    if pgn_hash in _video_cache:
+                        video_bytes, _ = _video_cache[pgn_hash]
+                        logger.info(f"Using cached video for {player.username}'s game")
+                    else:
+                        logger.info(f"Generating video for {player.username}'s game...")
+                        video_bytes = await generate_game_video_async(pgn)
+                        if video_bytes:
+                            _video_cache[pgn_hash] = (video_bytes, now)
+                            logger.info(f"Video generated and cached for {player.username}'s game")
 
                 if video_bytes:
                     file = discord.File(

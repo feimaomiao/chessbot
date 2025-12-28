@@ -29,8 +29,12 @@ LOG_DIR = Path("./logs")
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / "chesstracker.log"
 
-logger = logging.getLogger()
-logger.setLevel(getattr(logging, LOG_LEVEL))
+# Configure root logger
+root_logger = logging.getLogger()
+root_logger.setLevel(getattr(logging, LOG_LEVEL))
+
+# Clear any existing handlers to prevent duplicates
+root_logger.handlers.clear()
 
 formatter = logging.Formatter(
     "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -43,7 +47,7 @@ file_handler = RotatingFileHandler(
     backupCount=5,
 )
 file_handler.setFormatter(formatter)
-logger.addHandler(file_handler)
+root_logger.addHandler(file_handler)
 
 logger = logging.getLogger(__name__)
 
