@@ -111,7 +111,8 @@ def calculate_game_accuracy(
 
 def _evaluate_positions_sync(boards: list, evaluator) -> list[float]:
     """Synchronous helper for running evaluation in a thread."""
-    return evaluator.evaluate_positions(boards, parallel=True, track_stats=False)
+    evaluations, _ = evaluator.evaluate_positions(boards, parallel=True, track_stats=False)
+    return evaluations
 
 
 async def calculate_accuracy_from_pgn(

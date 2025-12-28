@@ -340,28 +340,34 @@ class StockfishEvaluator:
             track_stats: Whether to record performance statistics
 
         Returns:
-            List of evaluations in centipawns
+            Tuple of (list of evaluations in centipawns, cache hit count)
         """
-        cache = get_eval_cache()
-
-        # Count cache hits before evaluation
-        cache_hits_before = cache._hits
-
         with Timer() as timer:
             if not parallel or not self.available:
-                results = [self.evaluate(board) for board in positions]
+                # Sequential evaluation - count cache hits manually
+                cache = get_eval_cache()
+                results = []
+                cache_hits = 0
+                for board in positions:
+                    fen = board.fen()
+                    cached = cache.get(fen)
+                    if cached is not None:
+                        results.append(cached)
+                        cache_hits += 1
+                    else:
+                        result = self.evaluate(board)
+                        results.append(result)
             else:
-                results = self._evaluate_parallel(positions)
+                results, cache_hits = self._evaluate_parallel(positions)
 
         # Record stats
         if track_stats:
-            cache_hits = cache._hits - cache_hits_before
             tracker = get_stats_tracker()
             tracker.record_evaluation(len(positions), timer.elapsed_ms, cache_hits)
 
-        return results
+        return results, cache_hits
 
-    def _evaluate_parallel(self, positions: list[chess.Board]) -> list[float]:
+    def _evaluate_parallel(self, positions: list[chess.Board]) -> tuple[list[float], int]:
         """
         Evaluate positions in parallel using multiple Stockfish instances.
         Uses cache to avoid re-evaluating known positions.
@@ -370,7 +376,7 @@ class StockfishEvaluator:
             positions: List of chess board positions
 
         Returns:
-            List of evaluations in centipawns (in order)
+            Tuple of (list of evaluations in centipawns, cache hit count)
         """
         cache = get_eval_cache()
         results = [0.0] * len(positions)
@@ -388,13 +394,15 @@ class StockfishEvaluator:
             else:
                 uncached_tasks.append((i, board, fen, turn_perspective_supported))
 
+        cache_hits = len(positions) - len(uncached_tasks)
+
         # If all cached, return early
         if not uncached_tasks:
             logger.info(f"All {len(positions)} positions found in cache")
-            return results
+            return results, cache_hits
 
         logger.info(
-            f"Cache: {len(positions) - len(uncached_tasks)}/{len(positions)} hits, "
+            f"Cache: {cache_hits}/{len(positions)} hits, "
             f"evaluating {len(uncached_tasks)} positions"
         )
 
@@ -406,7 +414,7 @@ class StockfishEvaluator:
                 result = calculate_material_eval(board)
                 results[idx] = result
                 cache.set(fen, result)
-            return results
+            return results, cache_hits
 
         # Find the stockfish path that works
         stockfish_path = None
@@ -431,7 +439,7 @@ class StockfishEvaluator:
                 result = calculate_material_eval(board)
                 results[idx] = result
                 cache.set(fen, result)
-            return results
+            return results, cache_hits
 
         def evaluate_single(args: tuple[int, chess.Board, str, bool]) -> tuple[int, float, str]:
             """Evaluate a single position with its own Stockfish instance."""
@@ -504,7 +512,7 @@ class StockfishEvaluator:
                 # Store in cache for future use
                 cache.set(fen, score)
 
-        return results
+        return results, cache_hits
 
     def close(self):
         """Clean up the Stockfish engine."""
@@ -906,8 +914,7 @@ def generate_game_video(
         MP4 video as bytes, or None if generation fails
     """
     start_time = time.perf_counter()
-    cache = get_eval_cache()
-    cache_hits_before = cache._hits
+    video_cache_hits = 0
 
     try:
         import imageio.v3 as iio
@@ -928,7 +935,7 @@ def generate_game_video(
             logger.info(f"Evaluating {len(positions)} positions with Stockfish...")
             boards = [board for board, _ in positions]
             # Don't double-track stats from evaluate_positions
-            evaluations = evaluator.evaluate_positions(boards, track_stats=False)
+            evaluations, video_cache_hits = evaluator.evaluate_positions(boards, track_stats=False)
             logger.info("Stockfish evaluation complete")
         else:
             logger.info("Stockfish not available, using material evaluation")
@@ -976,9 +983,8 @@ def generate_game_video(
         # Record stats
         if track_stats:
             elapsed_ms = (time.perf_counter() - start_time) * 1000
-            cache_hits = cache._hits - cache_hits_before
             tracker = get_stats_tracker()
-            tracker.record_video_generation(len(positions), elapsed_ms, cache_hits)
+            tracker.record_video_generation(len(positions), elapsed_ms, video_cache_hits)
 
         return video_bytes
 
