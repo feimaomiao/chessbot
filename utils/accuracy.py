@@ -4,6 +4,7 @@ Accuracy calculation for chess games using Lichess formula.
 Based on: https://lichess.org/page/accuracy
 """
 
+import asyncio
 import logging
 import math
 from typing import Optional
@@ -108,6 +109,11 @@ def calculate_game_accuracy(
         return None
 
 
+def _evaluate_positions_sync(boards: list, evaluator) -> list[float]:
+    """Synchronous helper for running evaluation in a thread."""
+    return evaluator.evaluate_positions(boards, parallel=True, track_stats=False)
+
+
 async def calculate_accuracy_from_pgn(
     pgn: str,
     player_color: str,
@@ -139,8 +145,10 @@ async def calculate_accuracy_from_pgn(
         return None
 
     try:
-        # Evaluate all positions (don't track stats for accuracy calculation)
-        evaluations = evaluator.evaluate_positions(boards, parallel=True, track_stats=False)
+        # Run blocking evaluation in a thread pool to avoid blocking the event loop
+        evaluations = await asyncio.to_thread(
+            _evaluate_positions_sync, boards, evaluator
+        )
 
         # Calculate accuracy
         return calculate_game_accuracy(evaluations, player_color)
