@@ -71,32 +71,91 @@ class GameTracker:
             logger.debug("No tracked players found")
             return
 
-        logger.info(f"Polling {len(players)} tracked player(s)")
+        # Group players by (platform, username) to avoid duplicate API calls
+        # when the same user is tracked in multiple servers
+        player_groups: dict[tuple[str, str], list[TrackedPlayer]] = {}
+        for p in players:
+            key = (p.platform, p.username.lower())
+            if key not in player_groups:
+                player_groups[key] = []
+            player_groups[key].append(p)
+
+        unique_users = len(player_groups)
+        total_trackers = len(players)
+        if unique_users < total_trackers:
+            logger.info(f"Polling {unique_users} unique user(s) ({total_trackers} trackers)")
+        else:
+            logger.info(f"Polling {unique_users} user(s)")
 
         # Group by platform to avoid mixing rate limits
-        chesscom_players = [p for p in players if p.platform == Platform.CHESSCOM]
-        lichess_players = [p for p in players if p.platform == Platform.LICHESS]
+        chesscom_groups = {k: v for k, v in player_groups.items() if k[0] == Platform.CHESSCOM}
+        lichess_groups = {k: v for k, v in player_groups.items() if k[0] == Platform.LICHESS}
 
-        # Poll Chess.com players in parallel
-        if chesscom_players:
-            logger.debug(f"Polling {len(chesscom_players)} Chess.com player(s)")
-            tasks = [self._poll_player(p, self.chesscom_client) for p in chesscom_players]
+        # Poll Chess.com users in parallel (one API call per unique user)
+        if chesscom_groups:
+            logger.debug(f"Polling {len(chesscom_groups)} unique Chess.com user(s)")
+            tasks = [
+                self._poll_user_group(players_list, self.chesscom_client)
+                for players_list in chesscom_groups.values()
+            ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            for player, result in zip(chesscom_players, results):
+            for (platform, username), result in zip(chesscom_groups.keys(), results):
                 if isinstance(result, Exception):
-                    logger.error(f"Error polling {player.username} on Chess.com: {result}")
+                    logger.error(f"Error polling {username} on Chess.com: {result}")
 
-        # Poll Lichess players in parallel
-        if lichess_players:
-            logger.debug(f"Polling {len(lichess_players)} Lichess player(s)")
-            tasks = [self._poll_player(p, self.lichess_client) for p in lichess_players]
+        # Poll Lichess users in parallel (one API call per unique user)
+        if lichess_groups:
+            logger.debug(f"Polling {len(lichess_groups)} unique Lichess user(s)")
+            tasks = [
+                self._poll_user_group(players_list, self.lichess_client)
+                for players_list in lichess_groups.values()
+            ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            for player, result in zip(lichess_players, results):
+            for (platform, username), result in zip(lichess_groups.keys(), results):
                 if isinstance(result, Exception):
-                    logger.error(f"Error polling {player.username} on Lichess: {result}")
+                    logger.error(f"Error polling {username} on Lichess: {result}")
+
+    async def _poll_user_group(self, players: list[TrackedPlayer], client):
+        """Poll a unique user and process games for all their trackers."""
+        # Use first player for API call (all have same username/platform)
+        representative = players[0]
+        username = representative.username
+        platform = representative.platform
+
+        logger.debug(f"Polling {username} on {platform}...")
+
+        try:
+            # Get the earliest last_game_time across all trackers for this user
+            last_game_times = []
+            for player in players:
+                t = await self.db.get_latest_game_time(player.id)
+                if t:
+                    last_game_times.append(t)
+
+            if last_game_times:
+                last_game_time = min(last_game_times)
+            else:
+                last_game_time = datetime.utcnow() - timedelta(hours=1)
+
+            # Single API call for this user
+            games = await client.get_recent_games(username, since=last_game_time)
+
+            if games:
+                logger.info(f"Found {len(games)} new game(s) for {username} on {platform}")
+            else:
+                logger.debug(f"No new games for {username}")
+
+            # Process each game for all trackers of this user
+            for game_data in games:
+                for player in players:
+                    await self._process_game(player, game_data)
+
+        except Exception as e:
+            logger.error(f"Error polling {username} on {platform}: {e}", exc_info=True)
+            raise
 
     async def _poll_player(self, player: TrackedPlayer, client):
-        """Poll a single player for new games."""
+        """Poll a single player for new games. (Legacy method for single-server use)"""
         logger.debug(f"Polling {player.username} on {player.platform}...")
 
         try:
