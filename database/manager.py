@@ -424,12 +424,34 @@ class DatabaseManager:
         """
         Get a random game where the tracked player lost by checkmate or resignation.
 
+        Selection is equalized by first picking a random player, then picking
+        a random game from that player (prevents bias towards players with more games).
+
         Args:
             guild_id: The Discord guild ID
 
         Returns:
             Tuple of (TrackedPlayer, Game) or None if no suitable games found
         """
+        # First, pick a random player who has eligible games
+        cursor = await self._connection.execute(
+            """SELECT DISTINCT tp.id
+               FROM tracked_players tp
+               JOIN games g ON g.player_id = tp.id
+               WHERE tp.guild_id = ?
+                 AND g.result = 'loss'
+                 AND g.termination IN ('checkmate', 'resign')
+               ORDER BY RANDOM()
+               LIMIT 1""",
+            (guild_id,),
+        )
+        player_row = await cursor.fetchone()
+        if not player_row:
+            return None
+
+        player_id = player_row["id"]
+
+        # Then pick a random game from that player
         cursor = await self._connection.execute(
             """SELECT
                 tp.id as tp_id, tp.guild_id, tp.platform as tp_platform,
@@ -441,12 +463,12 @@ class DatabaseManager:
                 g.played_at, g.game_url, g.final_fen, g.notified, g.accuracy, g.termination
                FROM tracked_players tp
                JOIN games g ON g.player_id = tp.id
-               WHERE tp.guild_id = ?
+               WHERE tp.id = ?
                  AND g.result = 'loss'
                  AND g.termination IN ('checkmate', 'resign')
                ORDER BY RANDOM()
                LIMIT 1""",
-            (guild_id,),
+            (player_id,),
         )
         row = await cursor.fetchone()
 
@@ -561,9 +583,29 @@ class DatabaseManager:
         Get a random game where any tracked player lost by checkmate or resignation.
         Searches across all guilds/servers.
 
+        Selection is equalized by first picking a random player, then picking
+        a random game from that player (prevents bias towards players with more games).
+
         Returns:
             Tuple of (TrackedPlayer, Game) or None if no suitable games found
         """
+        # First, pick a random player who has eligible games
+        cursor = await self._connection.execute(
+            """SELECT DISTINCT tp.id
+               FROM tracked_players tp
+               JOIN games g ON g.player_id = tp.id
+               WHERE g.result = 'loss'
+                 AND g.termination IN ('checkmate', 'resign')
+               ORDER BY RANDOM()
+               LIMIT 1"""
+        )
+        player_row = await cursor.fetchone()
+        if not player_row:
+            return None
+
+        player_id = player_row["id"]
+
+        # Then pick a random game from that player
         cursor = await self._connection.execute(
             """SELECT
                 tp.id as tp_id, tp.guild_id, tp.platform as tp_platform,
@@ -575,10 +617,12 @@ class DatabaseManager:
                 g.played_at, g.game_url, g.final_fen, g.notified, g.accuracy, g.termination
                FROM tracked_players tp
                JOIN games g ON g.player_id = tp.id
-               WHERE g.result = 'loss'
+               WHERE tp.id = ?
+                 AND g.result = 'loss'
                  AND g.termination IN ('checkmate', 'resign')
                ORDER BY RANDOM()
-               LIMIT 1"""
+               LIMIT 1""",
+            (player_id,),
         )
         row = await cursor.fetchone()
 
