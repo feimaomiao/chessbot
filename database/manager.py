@@ -387,6 +387,15 @@ class DatabaseManager:
         )
         return await cursor.fetchone() is not None
 
+    async def get_player_game_count(self, player_id: int) -> int:
+        """Get the total number of games stored for a player."""
+        cursor = await self._connection.execute(
+            "SELECT COUNT(*) as count FROM games WHERE player_id = ?",
+            (player_id,),
+        )
+        row = await cursor.fetchone()
+        return row["count"] if row else 0
+
     async def get_recent_games(self, player_id: int, limit: int = 5) -> list[Game]:
         """Get the most recent games for a player."""
         cursor = await self._connection.execute(
