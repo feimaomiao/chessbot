@@ -59,6 +59,9 @@ from config import (
     USE_MATERIAL_EVAL_ONLY,
     SKIP_OPENING_MOVES,
     ENABLE_VIDEO_AUDIO,
+    STOCKFISH_HASH_MB,
+    STOCKFISH_THREADS,
+    STOCKFISH_POOL_SIZE,
 )
 
 # Video settings
@@ -197,6 +200,160 @@ _eval_cache = EvalCache()
 def get_eval_cache() -> EvalCache:
     """Get the global evaluation cache."""
     return _eval_cache
+
+
+class StockfishPool:
+    """Thread-safe pool of reusable Stockfish engines for parallel evaluation."""
+
+    def __init__(
+        self,
+        size: Optional[int] = None,
+        depth: int = STOCKFISH_DEPTH,
+        hash_mb: int = STOCKFISH_HASH_MB,
+        threads: int = STOCKFISH_THREADS,
+    ):
+        self._size = size or os.cpu_count() or 4
+        self._depth = depth
+        self._hash_mb = hash_mb
+        self._threads = threads
+        self._engines: list = []
+        self._available: list = []
+        self._lock = threading.Lock()
+        self._condition = threading.Condition(self._lock)
+        self._stockfish_path: Optional[str] = None
+        self._turn_perspective_supported = False
+        self._initialized = False
+
+    def _find_stockfish_path(self) -> Optional[str]:
+        """Find a working Stockfish binary path."""
+        try:
+            from stockfish import Stockfish
+        except ImportError:
+            logger.warning("stockfish package not installed")
+            return None
+
+        env_path = os.environ.get("STOCKFISH_PATH")
+        paths_to_try = [env_path] if env_path else []
+        paths_to_try.extend(STOCKFISH_PATHS)
+
+        for candidate in paths_to_try:
+            if not candidate:
+                continue
+            try:
+                test_engine = Stockfish(path=candidate, depth=1)
+                test_engine.send_quit_command()
+                return candidate
+            except Exception:
+                continue
+        return None
+
+    def _create_engine(self):
+        """Create a new Stockfish engine with optimal settings."""
+        from stockfish import Stockfish
+
+        params = {
+            "Hash": self._hash_mb,
+            "Threads": self._threads,
+        }
+        engine = Stockfish(
+            path=self._stockfish_path,
+            depth=self._depth,
+            parameters=params,
+        )
+        # Check and set turn perspective
+        try:
+            engine.set_turn_perspective(False)
+            self._turn_perspective_supported = True
+        except AttributeError:
+            self._turn_perspective_supported = False
+        return engine
+
+    def initialize(self) -> bool:
+        """Initialize the pool with Stockfish engines. Returns True on success."""
+        if self._initialized:
+            return True
+
+        self._stockfish_path = self._find_stockfish_path()
+        if not self._stockfish_path:
+            logger.warning("Stockfish not found, pool initialization failed")
+            return False
+
+        logger.info(
+            f"Initializing Stockfish pool: size={self._size}, depth={self._depth}, "
+            f"hash={self._hash_mb}MB, threads={self._threads}"
+        )
+
+        try:
+            for i in range(self._size):
+                engine = self._create_engine()
+                self._engines.append(engine)
+                self._available.append(engine)
+            self._initialized = True
+            logger.info(f"Stockfish pool initialized with {self._size} engines")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to initialize Stockfish pool: {e}")
+            self.shutdown()
+            return False
+
+    def acquire(self, timeout: float = 30.0):
+        """Acquire an engine from the pool. Blocks until one is available."""
+        with self._condition:
+            while not self._available:
+                if not self._condition.wait(timeout):
+                    raise TimeoutError("Timeout waiting for Stockfish engine")
+            return self._available.pop()
+
+    def release(self, engine) -> None:
+        """Return an engine to the pool."""
+        with self._condition:
+            self._available.append(engine)
+            self._condition.notify()
+
+    def shutdown(self) -> None:
+        """Shutdown all engines in the pool."""
+        with self._lock:
+            for engine in self._engines:
+                try:
+                    engine.send_quit_command()
+                except Exception:
+                    pass
+            self._engines.clear()
+            self._available.clear()
+            self._initialized = False
+
+    @property
+    def available(self) -> bool:
+        """Check if pool is initialized and has engines."""
+        return self._initialized and len(self._engines) > 0
+
+    @property
+    def turn_perspective_supported(self) -> bool:
+        """Check if turn perspective is supported."""
+        return self._turn_perspective_supported
+
+    @property
+    def stockfish_path(self) -> Optional[str]:
+        """Get the Stockfish path used by the pool."""
+        return self._stockfish_path
+
+
+# Global Stockfish pool for parallel evaluation
+_stockfish_pool: Optional[StockfishPool] = None
+
+
+def get_stockfish_pool(depth: int = STOCKFISH_DEPTH) -> StockfishPool:
+    """Get or create the global Stockfish pool."""
+    global _stockfish_pool
+    if _stockfish_pool is None:
+        _stockfish_pool = StockfishPool(
+            size=STOCKFISH_POOL_SIZE,
+            depth=depth,
+            hash_mb=STOCKFISH_HASH_MB,
+            threads=STOCKFISH_THREADS,
+        )
+        _stockfish_pool.initialize()
+    return _stockfish_pool
 
 
 class StockfishEvaluator:
@@ -373,7 +530,7 @@ class StockfishEvaluator:
 
     def _evaluate_parallel(self, positions: list[chess.Board]) -> tuple[list[float], int]:
         """
-        Evaluate positions in parallel using multiple Stockfish instances.
+        Evaluate positions in parallel using pooled Stockfish engines.
         Uses cache to avoid re-evaluating known positions.
 
         Args:
@@ -385,9 +542,6 @@ class StockfishEvaluator:
         cache = get_eval_cache()
         results = [0.0] * len(positions)
 
-        # Check if turn perspective is supported from main evaluator
-        turn_perspective_supported = getattr(self, '_turn_perspective_supported', False)
-
         # First pass: check cache and collect uncached positions
         uncached_tasks = []
         for i, board in enumerate(positions):
@@ -396,7 +550,7 @@ class StockfishEvaluator:
             if cached is not None:
                 results[i] = cached
             else:
-                uncached_tasks.append((i, board, fen, turn_perspective_supported))
+                uncached_tasks.append((i, board, fen))
 
         cache_hits = len(positions) - len(uncached_tasks)
         cache_misses = len(uncached_tasks)
@@ -410,64 +564,36 @@ class StockfishEvaluator:
             f"Cache: {cache_hits} hits, {cache_misses} misses out of {len(positions)} positions"
         )
 
-        try:
-            from stockfish import Stockfish
-        except ImportError:
-            # Fall back to sequential evaluation for uncached
-            for idx, board, fen, _ in uncached_tasks:
+        # Get the engine pool
+        pool = get_stockfish_pool(depth=self.depth)
+        if not pool.available:
+            # Fall back to material evaluation
+            logger.warning("Stockfish pool not available, falling back to material eval")
+            for idx, board, fen in uncached_tasks:
                 result = calculate_material_eval(board)
                 results[idx] = result
                 cache.set(fen, result)
             return results, cache_hits
 
-        # Find the stockfish path that works
-        stockfish_path = None
-        for candidate in STOCKFISH_PATHS:
-            test_engine = None
-            try:
-                test_engine = Stockfish(path=candidate, depth=self.depth)
-                stockfish_path = candidate
-                break
-            except Exception:
-                continue
-            finally:
-                if test_engine is not None:
-                    try:
-                        test_engine.send_quit_command()
-                    except Exception:
-                        pass
+        turn_perspective_supported = pool.turn_perspective_supported
 
-        if not stockfish_path:
-            # Fall back to sequential evaluation for uncached
-            for idx, board, fen, _ in uncached_tasks:
-                result = calculate_material_eval(board)
-                results[idx] = result
-                cache.set(fen, result)
-            return results, cache_hits
-
-        def evaluate_single(args: tuple[int, chess.Board, str, bool]) -> tuple[int, float, str]:
-            """Evaluate a single position with its own Stockfish instance."""
-            idx, board, fen, turn_perspective_supported = args
+        def evaluate_single(args: tuple[int, chess.Board, str]) -> tuple[int, float, str]:
+            """Evaluate a single position using a pooled Stockfish engine."""
+            idx, board, fen = args
 
             # Handle game-over positions directly (Stockfish can't evaluate these)
             if board.is_checkmate():
-                # The side to move is checkmated
                 if board.turn == chess.WHITE:
-                    return (idx, -10000, fen)  # White is checkmated, black wins
+                    return (idx, -10000, fen)  # White is checkmated
                 else:
-                    return (idx, 10000, fen)  # Black is checkmated, white wins
+                    return (idx, 10000, fen)  # Black is checkmated
             elif board.is_stalemate() or board.is_insufficient_material() or board.is_game_over():
                 return (idx, 0, fen)  # Draw or game over
 
             engine = None
             try:
-                engine = Stockfish(path=stockfish_path, depth=self.depth)
-                # Try to set turn perspective if supported
-                if turn_perspective_supported:
-                    try:
-                        engine.set_turn_perspective(False)
-                    except AttributeError:
-                        pass
+                # Acquire engine from pool (blocks until available)
+                engine = pool.acquire(timeout=60.0)
 
                 engine.set_fen_position(fen)
                 evaluation = engine.get_evaluation()
@@ -477,32 +603,31 @@ class StockfishEvaluator:
                 elif evaluation["type"] == "mate":
                     mate_moves = evaluation["value"]
                     if mate_moves > 0:
-                        result = 10000 - abs(mate_moves)  # Side to move has mate
+                        result = 10000 - abs(mate_moves)
                     else:
-                        result = -10000 + abs(mate_moves)  # Side to move getting mated
+                        result = -10000 + abs(mate_moves)
                 else:
                     result = 0.0
 
-                # If turn_perspective is not supported, manually convert to White's perspective
+                # Convert to White's perspective if needed
                 if not turn_perspective_supported:
                     if board.turn == chess.BLACK:
                         result = -result
 
                 return (idx, result, fen)
+            except TimeoutError:
+                logger.warning(f"Timeout acquiring engine for position {idx}")
+                return (idx, calculate_material_eval(board), fen)
             except Exception as e:
                 logger.debug(f"Parallel eval error for position {idx}: {e}")
                 return (idx, calculate_material_eval(board), fen)
             finally:
-                # Properly clean up the engine to avoid __del__ errors
+                # Release engine back to pool
                 if engine is not None:
-                    try:
-                        engine.send_quit_command()
-                    except Exception:
-                        pass
+                    pool.release(engine)
 
-        # Use ThreadPoolExecutor for parallel evaluation
-        # Limit workers to avoid spawning too many Stockfish processes
-        num_workers = min(len(uncached_tasks), os.cpu_count() or 4)
+        # Use ThreadPoolExecutor - pool size limits concurrent evaluations
+        num_workers = min(len(uncached_tasks), pool._size)
 
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             futures = {
@@ -513,7 +638,6 @@ class StockfishEvaluator:
             for future in as_completed(futures):
                 idx, score, fen = future.result()
                 results[idx] = score
-                # Store in cache for future use
                 cache.set(fen, score)
 
         return results, cache_hits

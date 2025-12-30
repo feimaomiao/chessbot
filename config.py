@@ -51,11 +51,22 @@ class GameResult:
 
 
 # Performance settings (tune these for slower machines)
-# Stockfish depth: lower = faster, less accurate (range: 1-20, default: 12)
-STOCKFISH_DEPTH = int(os.getenv("STOCKFISH_DEPTH", "12"))
+# Stockfish depth: lower = faster, less accurate (range: 1-20, default: 10)
+# With NNUE, depth 10 provides excellent accuracy while being much faster than depth 12
+STOCKFISH_DEPTH = int(os.getenv("STOCKFISH_DEPTH", "10"))
 
-# Quiz-specific Stockfish depth (higher for better puzzle accuracy, default: 15)
-QUIZ_STOCKFISH_DEPTH = int(os.getenv("QUIZ_STOCKFISH_DEPTH", "15"))
+# Stockfish hash table size in MB (default: 64MB, higher = better for repeated positions)
+STOCKFISH_HASH_MB = int(os.getenv("STOCKFISH_HASH_MB", "64"))
+
+# Stockfish threads per engine (default: 1, keep at 1 for parallel evaluation)
+STOCKFISH_THREADS = int(os.getenv("STOCKFISH_THREADS", "1"))
+
+# Number of Stockfish engines in pool (default: CPU count, 0 = auto)
+STOCKFISH_POOL_SIZE = int(os.getenv("STOCKFISH_POOL_SIZE", "0")) or None
+
+# Quiz-specific Stockfish depth (higher for better puzzle accuracy, default: 12)
+# With NNUE, depth 12 provides excellent accuracy for blunder detection
+QUIZ_STOCKFISH_DEPTH = int(os.getenv("QUIZ_STOCKFISH_DEPTH", "12"))
 
 # Board size in pixels: smaller = faster rendering (default: 400)
 BOARD_SIZE = int(os.getenv("BOARD_SIZE", "400"))

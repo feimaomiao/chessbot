@@ -18,7 +18,14 @@ from typing import Optional
 import chess
 import chess.pgn
 
-from utils.video import QUIZ_STOCKFISH_DEPTH, STOCKFISH_PATHS
+from utils.video import (
+    QUIZ_STOCKFISH_DEPTH,
+    STOCKFISH_PATHS,
+    StockfishPool,
+    STOCKFISH_HASH_MB,
+    STOCKFISH_THREADS,
+    STOCKFISH_POOL_SIZE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +133,24 @@ def get_quiz_eval_cache() -> QuizEvalCache:
     return _quiz_eval_cache
 
 
+# Global quiz Stockfish pool (higher depth than regular evaluation)
+_quiz_stockfish_pool: Optional[StockfishPool] = None
+
+
+def get_quiz_stockfish_pool() -> StockfishPool:
+    """Get or create the global quiz Stockfish pool."""
+    global _quiz_stockfish_pool
+    if _quiz_stockfish_pool is None:
+        _quiz_stockfish_pool = StockfishPool(
+            size=STOCKFISH_POOL_SIZE,
+            depth=QUIZ_STOCKFISH_DEPTH,
+            hash_mb=STOCKFISH_HASH_MB,
+            threads=STOCKFISH_THREADS,
+        )
+        _quiz_stockfish_pool.initialize()
+    return _quiz_stockfish_pool
+
+
 @dataclass
 class MissedMove:
     """Represents a position where the player missed a better move."""
@@ -143,32 +168,18 @@ class MissedMove:
     eval_after_played: float  # Evaluation after the blunder
 
 
-def _get_stockfish_path() -> Optional[str]:
-    """Find a working Stockfish binary path."""
-    try:
-        from stockfish import Stockfish
-    except ImportError:
-        return None
-
-    for candidate in STOCKFISH_PATHS:
-        try:
-            engine = Stockfish(path=candidate, depth=QUIZ_STOCKFISH_DEPTH)
-            engine.send_quit_command()
-            return candidate
-        except Exception:
-            continue
-    return None
-
-
-def _evaluate_fen(engine, fen: str, board_turn: chess.Color, cache: QuizEvalCache) -> float:
+def _evaluate_fen_with_engine(
+    engine, fen: str, board_turn: chess.Color, cache: QuizEvalCache, turn_perspective_supported: bool
+) -> float:
     """
-    Evaluate a position, using cache if available.
+    Evaluate a position using engine, with caching.
 
     Args:
-        engine: Stockfish engine instance
+        engine: Stockfish engine instance from pool
         fen: FEN string of position to evaluate
         board_turn: Whose turn it is in the position
         cache: Quiz evaluation cache
+        turn_perspective_supported: Whether engine has turn perspective set
 
     Returns:
         Evaluation in centipawns from white's perspective
@@ -190,8 +201,8 @@ def _evaluate_fen(engine, fen: str, board_turn: chess.Color, cache: QuizEvalCach
     else:
         eval_score = 0.0
 
-    # Adjust for side to move (Stockfish returns from side-to-move perspective)
-    if board_turn == chess.BLACK:
+    # Adjust for side to move if needed
+    if not turn_perspective_supported and board_turn == chess.BLACK:
         eval_score = -eval_score
 
     # Cache the result
@@ -199,22 +210,24 @@ def _evaluate_fen(engine, fen: str, board_turn: chess.Color, cache: QuizEvalCach
     return eval_score
 
 
-def _analyze_position(args: tuple) -> tuple:
+def _analyze_position_pooled(args: tuple) -> tuple:
     """
-    Analyze a single position with its own Stockfish instance.
+    Analyze a single position using a pooled Stockfish engine.
 
     Args:
-        args: (index, fen, player_move_uci, is_white, stockfish_path)
+        args: (index, fen, player_move_uci, is_white, pool)
 
     Returns:
         (index, best_move_uci, eval_before, eval_after_best, eval_after_played) or None on error
     """
-    idx, fen, player_move_uci, is_white, stockfish_path = args
+    idx, fen, player_move_uci, is_white, pool = args
     cache = get_quiz_eval_cache()
+    turn_perspective_supported = pool.turn_perspective_supported
 
+    engine = None
     try:
-        from stockfish import Stockfish
-        engine = Stockfish(path=stockfish_path, depth=QUIZ_STOCKFISH_DEPTH)
+        # Acquire engine from pool
+        engine = pool.acquire(timeout=60.0)
 
         # Set up the position
         board = chess.Board(fen)
@@ -223,7 +236,6 @@ def _analyze_position(args: tuple) -> tuple:
         # Get best move
         best_move_uci = engine.get_best_move()
         if not best_move_uci:
-            engine.send_quit_command()
             return (idx, None, None, None, None)
 
         best_move = chess.Move.from_uci(best_move_uci)
@@ -231,32 +243,37 @@ def _analyze_position(args: tuple) -> tuple:
 
         # If best move equals player move, no blunder
         if best_move == player_move:
-            engine.send_quit_command()
             return (idx, None, None, None, None)
 
         # Evaluate position before move (with caching)
-        eval_before = _evaluate_fen(engine, fen, board.turn, cache)
+        eval_before = _evaluate_fen_with_engine(engine, fen, board.turn, cache, turn_perspective_supported)
 
         # Evaluate after best move (with caching)
         board_after_best = board.copy()
         board_after_best.push(best_move)
-        eval_after_best = _evaluate_fen(
-            engine, board_after_best.fen(), board_after_best.turn, cache
+        eval_after_best = _evaluate_fen_with_engine(
+            engine, board_after_best.fen(), board_after_best.turn, cache, turn_perspective_supported
         )
 
         # Evaluate after player's move (with caching)
         board_after_player = board.copy()
         board_after_player.push(player_move)
-        eval_after_played = _evaluate_fen(
-            engine, board_after_player.fen(), board_after_player.turn, cache
+        eval_after_played = _evaluate_fen_with_engine(
+            engine, board_after_player.fen(), board_after_player.turn, cache, turn_perspective_supported
         )
 
-        engine.send_quit_command()
         return (idx, best_move_uci, eval_before, eval_after_best, eval_after_played)
 
+    except TimeoutError:
+        logger.warning(f"Timeout acquiring engine for quiz position {idx}")
+        return (idx, None, None, None, None)
     except Exception as e:
         logger.error(f"Error analyzing position {idx}: {e}")
         return (idx, None, None, None, None)
+    finally:
+        # Release engine back to pool
+        if engine is not None:
+            pool.release(engine)
 
 
 def find_missed_moves_parallel(
@@ -290,9 +307,10 @@ def find_missed_moves_parallel(
         logger.error(f"Error parsing PGN: {e}")
         return []
 
-    stockfish_path = _get_stockfish_path()
-    if not stockfish_path:
-        logger.warning("Stockfish not available for quiz analysis")
+    # Get the quiz engine pool
+    pool = get_quiz_stockfish_pool()
+    if not pool.available:
+        logger.warning("Stockfish pool not available for quiz analysis")
         return []
 
     # Collect all positions where the player moved
@@ -321,9 +339,9 @@ def find_missed_moves_parallel(
 
     logger.info(f"Analyzing {len(positions_to_analyze)} positions in parallel...")
 
-    # Prepare tasks for parallel execution
+    # Prepare tasks for parallel execution (pass pool instead of path)
     tasks = [
-        (pos["idx"], pos["fen"], pos["player_move_uci"], is_white, stockfish_path)
+        (pos["idx"], pos["fen"], pos["player_move_uci"], is_white, pool)
         for pos in positions_to_analyze
     ]
 
@@ -331,13 +349,13 @@ def find_missed_moves_parallel(
     cache = get_quiz_eval_cache()
     cache.reset_stats()
 
-    # Run analysis in parallel with timing
-    num_workers = min(len(tasks), os.cpu_count() or 4)
+    # Run analysis in parallel with timing - limit workers to pool size
+    num_workers = min(len(tasks), pool._size)
     results = {}
     start_time = time.time()
 
     with ThreadPoolExecutor(max_workers=num_workers) as executor:
-        futures = {executor.submit(_analyze_position, task): task[0] for task in tasks}
+        futures = {executor.submit(_analyze_position_pooled, task): task[0] for task in tasks}
         for future in as_completed(futures):
             result = future.result()
             if result:
