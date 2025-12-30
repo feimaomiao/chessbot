@@ -32,9 +32,13 @@ class QuizCog(commands.Cog):
         name="quiz",
         description="Start a chess puzzle from a tracked player's game",
     )
+    @app_commands.describe(
+        global_search="Search across all tracked players from all servers (default: False)",
+    )
     async def quiz(
         self,
         interaction: discord.Interaction,
+        global_search: bool = False,
     ):
         """Start a chess quiz puzzle."""
         await interaction.response.defer()
@@ -48,27 +52,39 @@ class QuizCog(commands.Cog):
             )
             return
 
-        # Check for tracked players
-        players = await self.db.get_tracked_players(interaction.guild_id)
-        if not players:
-            await interaction.followup.send(
-                "No tracked players in this server. "
-                "Use `/track` to add players first.",
-                ephemeral=True,
-            )
-            return
+        # Check for tracked players (only for local search)
+        if not global_search:
+            players = await self.db.get_tracked_players(interaction.guild_id)
+            if not players:
+                await interaction.followup.send(
+                    "No tracked players in this server. "
+                    "Use `/track` to add players first, or use `/quiz global_search:True` "
+                    "to search across all servers.",
+                    ephemeral=True,
+                )
+                return
 
         # Start the quiz
-        success = await self.quiz_service.start_quiz(interaction)
+        success = await self.quiz_service.start_quiz(interaction, global_search=global_search)
 
         if not success:
-            await interaction.followup.send(
-                "Could not generate a quiz puzzle. "
-                "This might happen if tracked players don't have any lost games "
-                "(by checkmate or resignation) with blunders (300+ centipawn loss), "
-                "or if Stockfish is unavailable. Try again!",
-                ephemeral=True,
-            )
+            if global_search:
+                await interaction.followup.send(
+                    "Could not generate a quiz puzzle. "
+                    "No tracked players across any server have lost games "
+                    "(by checkmate or resignation) with blunders (300+ centipawn loss), "
+                    "or Stockfish is unavailable. Try again!",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.followup.send(
+                    "Could not generate a quiz puzzle. "
+                    "This might happen if tracked players don't have any lost games "
+                    "(by checkmate or resignation) with blunders (300+ centipawn loss), "
+                    "or if Stockfish is unavailable. Try `/quiz global_search:True` "
+                    "to search across all servers.",
+                    ephemeral=True,
+                )
 
     @app_commands.command(
         name="answer",
@@ -147,3 +163,49 @@ class QuizCog(commands.Cog):
         if not correct_move:
             # Quiz may have been answered/revealed by someone else
             pass
+
+    @app_commands.command(
+        name="leaderboard",
+        description="Show the quiz leaderboard for this server",
+    )
+    async def leaderboard(
+        self,
+        interaction: discord.Interaction,
+    ):
+        """Show the quiz leaderboard."""
+        leaderboard = await self.db.get_quiz_leaderboard(interaction.guild_id)
+
+        if not leaderboard:
+            await interaction.response.send_message(
+                "No quiz scores yet! Use `/quiz` to start playing.",
+                ephemeral=True,
+            )
+            return
+
+        # Build leaderboard embed
+        embed = discord.Embed(
+            title="Quiz Leaderboard",
+            color=discord.Color.gold(),
+        )
+
+        # Format leaderboard entries
+        entries = []
+        medals = ["🥇", "🥈", "🥉"]
+        for i, (user_id, username, score) in enumerate(leaderboard):
+            rank = medals[i] if i < 3 else f"**{i + 1}.**"
+            entries.append(f"{rank} {username} - **{score}** point{'s' if score != 1 else ''}")
+
+        embed.description = "\n".join(entries)
+
+        # Show requester's rank if not in top 10
+        user_in_top = any(user_id == interaction.user.id for user_id, _, _ in leaderboard)
+        if not user_in_top:
+            user_score = await self.db.get_user_quiz_score(
+                interaction.guild_id, interaction.user.id
+            )
+            if user_score > 0:
+                embed.set_footer(
+                    text=f"Your score: {user_score} point{'s' if user_score != 1 else ''}"
+                )
+
+        await interaction.response.send_message(embed=embed)

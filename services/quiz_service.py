@@ -95,12 +95,14 @@ class QuizService:
     async def start_quiz(
         self,
         interaction: discord.Interaction,
+        global_search: bool = False,
     ) -> bool:
         """
         Start a new quiz in the channel.
 
         Args:
             interaction: The Discord interaction
+            global_search: If True, search across all tracked players globally
 
         Returns:
             True if quiz started successfully, False otherwise
@@ -110,9 +112,15 @@ class QuizService:
 
         # Try to find a suitable game with missed moves
         for attempt in range(MAX_GAME_RETRIES):
-            result = await self.db.get_random_lost_game_with_player(interaction.guild_id)
+            if global_search:
+                result = await self.db.get_random_lost_game_global()
+            else:
+                result = await self.db.get_random_lost_game_with_player(interaction.guild_id)
             if not result:
-                logger.info(f"No lost games found in guild {interaction.guild_id}")
+                if global_search:
+                    logger.info("No lost games found globally")
+                else:
+                    logger.info(f"No lost games found in guild {interaction.guild_id}")
                 return False
 
             player, game = result
@@ -291,6 +299,11 @@ class QuizService:
         if not quiz:
             return
 
+        # Award point to winner before deleting quiz
+        new_score = None
+        if winner_id and winner_name:
+            new_score = await self.db.add_quiz_point(quiz.guild_id, winner_id, winner_name)
+
         # Delete quiz from database
         await self.db.delete_quiz(channel_id)
 
@@ -307,13 +320,10 @@ class QuizService:
         player_color = "white" if board.turn == chess.WHITE else "black"
 
         if winner_id:
+            score_text = f" (Score: {new_score})" if new_score else ""
             embed = discord.Embed(
                 title="Correct!",
-                description=(
-                    f"<@{winner_id}> found the best move!\n\n"
-                    f"This was from {quiz.player_username}'s game "
-                    f"against {quiz.opponent_username}."
-                ),
+                description=f"<@{winner_id}> found the best move!{score_text}",
                 color=discord.Color.green(),
             )
         else:
