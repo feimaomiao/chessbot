@@ -138,14 +138,14 @@ class ChessTrackerBot(commands.Bot):
         logger.info(f"Logged in as {self.user} (ID: {self.user.id})")
         logger.info(f"Connected to {len(self.guilds)} guild(s)")
 
-        # Sync commands to all connected guilds (instant, unlike global sync)
+        # TODO: Remove this after running once - clears duplicate guild commands
         for guild in self.guilds:
             try:
-                self.tree.copy_global_to(guild=guild)
+                self.tree.clear_commands(guild=guild)
                 await self.tree.sync(guild=guild)
-                logger.info(f"Synced commands to guild: {guild.name}")
+                logger.info(f"Cleared guild commands from: {guild.name}")
             except Exception as e:
-                logger.error(f"Failed to sync to {guild.name}: {e}")
+                logger.error(f"Failed to clear commands from {guild.name}: {e}")
 
         # Start background services
         await self.tracker.start()
@@ -174,14 +174,6 @@ class ChessTrackerBot(commands.Bot):
         """Called when the bot joins a new guild."""
         logger.info(f"Joined guild: {guild.name} (ID: {guild.id})")
         await self.db.get_or_create_guild(guild.id)
-
-        # Sync commands to new guild immediately
-        try:
-            self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
-            logger.info(f"Synced commands to new guild: {guild.name}")
-        except Exception as e:
-            logger.error(f"Failed to sync to {guild.name}: {e}")
 
     async def close(self):
         """Cleanup on shutdown."""
