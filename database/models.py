@@ -67,7 +67,10 @@ class ActiveQuiz:
     eval_after_best: float  # Evaluation after best move
     eval_after_played: float  # Evaluation after the blunder
     started_at: Optional[datetime] = None
+    attempts: Optional[str] = None  # JSON: {"user_id": attempt_count, ...}
 
     def __post_init__(self):
         if self.started_at is None:
             self.started_at = datetime.utcnow()
+        if self.attempts is None:
+            self.attempts = "{}"

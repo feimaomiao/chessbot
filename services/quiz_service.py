@@ -1,5 +1,6 @@
 """Quiz service for managing chess quizzes in Discord channels."""
 
+import json
 import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
@@ -141,12 +142,12 @@ class QuizService:
                 logger.warning(f"Could not fetch PGN for game {game.game_id}")
                 continue
 
-            # Find missed moves (blunders with 300+ centipawn loss)
+            # Find missed moves (blunders with 250+ centipawn loss)
             # Run in thread pool to avoid blocking Discord heartbeat
-            missed_moves = await find_missed_moves_async(pgn, game.player_color, min_eval_loss=300)
+            missed_moves = await find_missed_moves_async(pgn, game.player_color, min_eval_loss=250)
 
             if not missed_moves:
-                logger.info(f"No blunders (300+ cp) found in game {game.game_id}")
+                logger.info(f"No blunders (250+ cp) found in game {game.game_id}")
                 continue
 
             # Select a quiz position
@@ -264,9 +265,19 @@ class QuizService:
         # Check if correct by comparing SAN notation
         user_move_san = board.san(user_move)
         if user_move_san == quiz.correct_move_san:
-            await self.end_quiz(channel_id, winner_id=user_id, winner_name=user_name)
+            # Get the user's attempt count (previous wrong attempts + this correct one)
+            attempts = json.loads(quiz.attempts or "{}")
+            user_attempts = attempts.get(str(user_id), 0) + 1
+            await self.end_quiz(
+                channel_id, winner_id=user_id, winner_name=user_name, attempts=user_attempts
+            )
             return True, None
         else:
+            # Track the incorrect attempt
+            attempts = json.loads(quiz.attempts or "{}")
+            user_key = str(user_id)
+            attempts[user_key] = attempts.get(user_key, 0) + 1
+            await self.db.update_quiz_attempts(channel_id, json.dumps(attempts))
             return False, "Incorrect, try again!"
 
     async def reveal_answer(self, channel_id: int) -> Optional[str]:
@@ -292,6 +303,7 @@ class QuizService:
         winner_id: Optional[int] = None,
         winner_name: Optional[str] = None,
         revealed: bool = False,
+        attempts: int = 1,
     ):
         """
         End a quiz (by correct answer or reveal).
@@ -301,15 +313,20 @@ class QuizService:
             winner_id: The Discord user ID of the winner (None if revealed)
             winner_name: The winner's display name
             revealed: True if the answer was revealed via /reveal
+            attempts: Number of attempts the winner made (for scoring 1/N)
         """
         quiz = await self.db.get_quiz(channel_id)
         if not quiz:
             return
 
-        # Award point to winner before deleting quiz
+        # Award points to winner before deleting quiz (score = 1/attempts)
         new_score = None
+        points_earned = None
         if winner_id and winner_name:
-            new_score = await self.db.add_quiz_point(quiz.guild_id, winner_id, winner_name)
+            points_earned = 1.0 / attempts
+            new_score = await self.db.add_quiz_score(
+                quiz.guild_id, winner_id, winner_name, points=points_earned
+            )
 
         # Delete quiz from database
         await self.db.delete_quiz(channel_id)
@@ -327,10 +344,21 @@ class QuizService:
         player_color = "white" if board.turn == chess.WHITE else "black"
 
         if winner_id:
-            score_text = f" (Score: {new_score})" if new_score else ""
+            # Build description with attempts and score info
+            if attempts == 1:
+                attempts_text = "on the first try!"
+            else:
+                attempts_text = f"in {attempts} tries"
+
+            if points_earned is not None:
+                points_text = f"+{points_earned:.2f}" if points_earned < 1 else "+1"
+                score_text = f" ({points_text}, Total: {new_score:.2f})"
+            else:
+                score_text = ""
+
             embed = discord.Embed(
                 title="Correct!",
-                description=f"<@{winner_id}> found the best move!{score_text}",
+                description=f"<@{winner_id}> found the best move {attempts_text}{score_text}",
                 color=discord.Color.green(),
             )
         else:

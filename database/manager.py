@@ -85,6 +85,7 @@ class DatabaseManager:
                 eval_after_best REAL NOT NULL,
                 eval_after_played REAL NOT NULL,
                 started_at DATETIME NOT NULL,
+                attempts TEXT DEFAULT '{}',
                 FOREIGN KEY (guild_id) REFERENCES guilds(id)
             );
 
@@ -138,6 +139,15 @@ class DatabaseManager:
                 await self._connection.commit()
             except Exception:
                 pass  # Column already exists
+
+        # Migration: Add attempts column to active_quizzes if it doesn't exist
+        try:
+            await self._connection.execute(
+                "ALTER TABLE active_quizzes ADD COLUMN attempts TEXT DEFAULT '{}'"
+            )
+            await self._connection.commit()
+        except Exception:
+            pass  # Column already exists
 
     # Guild operations
     async def get_or_create_guild(self, guild_id: int) -> Guild:
@@ -754,15 +764,24 @@ class DatabaseManager:
             """INSERT OR REPLACE INTO active_quizzes
                (channel_id, guild_id, position_fen, correct_move_san, played_move_san,
                 game_url, player_username, opponent_username, move_number, difficulty,
-                eval_before, eval_after_best, eval_after_played, started_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                eval_before, eval_after_best, eval_after_played, started_at, attempts)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (quiz.channel_id, quiz.guild_id, quiz.position_fen, quiz.correct_move_san,
              quiz.played_move_san, quiz.game_url, quiz.player_username, quiz.opponent_username,
              quiz.move_number, quiz.difficulty, quiz.eval_before, quiz.eval_after_best,
-             quiz.eval_after_played, quiz.started_at),
+             quiz.eval_after_played, quiz.started_at, quiz.attempts or "{}"),
         )
         await self._connection.commit()
         return quiz
+
+    async def update_quiz_attempts(self, channel_id: int, attempts: str) -> bool:
+        """Update the attempts JSON for an active quiz."""
+        cursor = await self._connection.execute(
+            "UPDATE active_quizzes SET attempts = ? WHERE channel_id = ?",
+            (attempts, channel_id),
+        )
+        await self._connection.commit()
+        return cursor.rowcount > 0
 
     async def get_quiz(self, channel_id: int) -> Optional[ActiveQuiz]:
         """Get an active quiz by channel ID."""
@@ -799,17 +818,21 @@ class DatabaseManager:
             eval_after_best=row["eval_after_best"],
             eval_after_played=row["eval_after_played"],
             started_at=datetime.fromisoformat(row["started_at"]) if row["started_at"] else None,
+            attempts=row["attempts"] if "attempts" in row.keys() else "{}",
         )
 
     # Quiz score operations
-    async def add_quiz_point(self, guild_id: int, user_id: int, username: str) -> int:
+    async def add_quiz_score(
+        self, guild_id: int, user_id: int, username: str, points: float = 1.0
+    ) -> float:
         """
-        Add a point to a user's quiz score.
+        Add points to a user's quiz score.
 
         Args:
             guild_id: The Discord guild ID
             user_id: The Discord user ID
             username: The user's display name (updated on each point)
+            points: Points to add (default 1.0, can be fractional like 0.5 for 2 tries)
 
         Returns:
             The user's new total score
@@ -817,11 +840,11 @@ class DatabaseManager:
         # Use INSERT OR REPLACE with score increment
         await self._connection.execute(
             """INSERT INTO quiz_scores (guild_id, user_id, username, score)
-               VALUES (?, ?, ?, 1)
+               VALUES (?, ?, ?, ?)
                ON CONFLICT(guild_id, user_id) DO UPDATE SET
-                   score = score + 1,
+                   score = score + ?,
                    username = excluded.username""",
-            (guild_id, user_id, username),
+            (guild_id, user_id, username, points, points),
         )
         await self._connection.commit()
 
@@ -831,11 +854,11 @@ class DatabaseManager:
             (guild_id, user_id),
         )
         row = await cursor.fetchone()
-        return row["score"] if row else 1
+        return row["score"] if row else points
 
     async def get_quiz_leaderboard(
         self, guild_id: int, limit: int = 10
-    ) -> list[tuple[int, str, int]]:
+    ) -> list[tuple[int, str, float]]:
         """
         Get the quiz leaderboard for a guild.
 

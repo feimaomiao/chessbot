@@ -114,14 +114,14 @@ class QuizCog(commands.Cog):
                 await interaction.followup.send(
                     f"Could not generate a quiz puzzle for **{username}**. "
                     "They may not have any lost games (by checkmate or resignation) "
-                    "with blunders (300+ centipawn loss), or Stockfish is unavailable.",
+                    "with blunders (250+ centipawn loss), or Stockfish is unavailable.",
                     ephemeral=True,
                 )
             elif global_search:
                 await interaction.followup.send(
                     "Could not generate a quiz puzzle. "
                     "No tracked players across any server have lost games "
-                    "(by checkmate or resignation) with blunders (300+ centipawn loss), "
+                    "(by checkmate or resignation) with blunders (250+ centipawn loss), "
                     "or Stockfish is unavailable. Try again!",
                     ephemeral=True,
                 )
@@ -129,7 +129,7 @@ class QuizCog(commands.Cog):
                 await interaction.followup.send(
                     "Could not generate a quiz puzzle. "
                     "This might happen if tracked players don't have any lost games "
-                    "(by checkmate or resignation) with blunders (300+ centipawn loss), "
+                    "(by checkmate or resignation) with blunders (250+ centipawn loss), "
                     "or if Stockfish is unavailable. Try `/quiz global_search:True` "
                     "to search across all servers.",
                     ephemeral=True,
@@ -242,7 +242,9 @@ class QuizCog(commands.Cog):
         medals = ["🥇", "🥈", "🥉"]
         for i, (user_id, username, score) in enumerate(leaderboard):
             rank = medals[i] if i < 3 else f"**{i + 1}.**"
-            entries.append(f"{rank} {username} - **{score}** point{'s' if score != 1 else ''}")
+            # Format score: show 2 decimal places for fractional, whole number otherwise
+            score_str = f"{score:.2f}" if score % 1 != 0 else f"{int(score)}"
+            entries.append(f"{rank} {username} - **{score_str}** points")
 
         embed.description = "\n".join(entries)
 
@@ -253,8 +255,7 @@ class QuizCog(commands.Cog):
                 interaction.guild_id, interaction.user.id
             )
             if user_score > 0:
-                embed.set_footer(
-                    text=f"Your score: {user_score} point{'s' if user_score != 1 else ''}"
-                )
+                score_str = f"{user_score:.2f}" if user_score % 1 != 0 else f"{int(user_score)}"
+                embed.set_footer(text=f"Your score: {score_str} points")
 
         await interaction.response.send_message(embed=embed)
