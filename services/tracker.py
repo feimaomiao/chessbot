@@ -26,6 +26,7 @@ class GameTracker:
         self.lichess_client = LichessClient()
         self._running = False
         self._task: asyncio.Task = None
+        self._is_initial_poll = True  # First poll after restart
 
     async def start(self):
         """Start the tracking loop."""
@@ -53,9 +54,16 @@ class GameTracker:
         """Main tracking loop."""
         while self._running:
             try:
-                logger.debug("Starting poll cycle...")
+                if self._is_initial_poll:
+                    logger.info("Starting initial poll after restart...")
+                else:
+                    logger.debug("Starting poll cycle...")
                 await self._poll_all_players()
-                logger.debug("Poll cycle complete")
+                if self._is_initial_poll:
+                    logger.info("Initial poll complete, switching to normal mode")
+                    self._is_initial_poll = False
+                else:
+                    logger.debug("Poll cycle complete")
                 # Save evaluation cache if modified
                 get_eval_cache().save_if_dirty()
             except Exception as e:
@@ -158,10 +166,16 @@ class GameTracker:
             else:
                 logger.debug(f"No new games for {username}")
 
+            # Sort games by played_at (oldest first for proper processing order)
+            games = sorted(games, key=lambda g: g.played_at)
+
             # Process each game for all trackers of this user
-            for game_data in games:
+            # On initial poll after restart, only the most recent game gets notification/video
+            for i, game_data in enumerate(games):
+                is_most_recent = (i == len(games) - 1)
+                send_notification = is_most_recent if self._is_initial_poll else True
                 for player in players:
-                    await self._process_game(player, game_data)
+                    await self._process_game(player, game_data, send_notification=send_notification)
 
             return len(games)
 
@@ -196,8 +210,14 @@ class GameTracker:
             logger.error(f"Error polling {player.username} on {player.platform}: {e}", exc_info=True)
             raise  # Re-raise so asyncio.gather can catch it
 
-    async def _process_game(self, player: TrackedPlayer, game_data: GameData):
-        """Process a single game from the API."""
+    async def _process_game(self, player: TrackedPlayer, game_data: GameData, send_notification: bool = True):
+        """Process a single game from the API.
+
+        Args:
+            player: The tracked player
+            game_data: Game data from the API
+            send_notification: If False, analyze for accuracy but skip video generation and notification
+        """
         # Check if game already exists
         if await self.db.game_exists(player.id, game_data.game_id):
             return
@@ -210,10 +230,10 @@ class GameTracker:
             if last_rating:
                 rating_change = game_data.rating_after - last_rating
 
-        # Fetch PGN for accuracy calculation and video generation
+        # Fetch PGN for accuracy calculation (always) and video (if sending notification)
         pgn = await self._fetch_game_pgn(player, game_data.game_id)
 
-        # Evaluate positions once (used for both accuracy and video)
+        # Evaluate positions for accuracy calculation
         evaluations = None
         accuracy = None
         if pgn:
@@ -227,6 +247,7 @@ class GameTracker:
                 logger.error(f"Error calculating accuracy: {e}")
 
         # Create game record
+        # If not sending notification, mark as already notified to skip later
         game = Game(
             id=None,
             player_id=player.id,
@@ -243,7 +264,7 @@ class GameTracker:
             played_at=game_data.played_at,
             game_url=game_data.game_url,
             final_fen=game_data.final_fen,
-            notified=False,
+            notified=not send_notification,  # Mark as notified if skipping notification
             accuracy=accuracy,
             termination=game_data.termination,
         )
@@ -251,13 +272,16 @@ class GameTracker:
         # Store in database
         saved_game = await self.db.add_game(game)
         if saved_game:
-            logger.info(f"New game recorded: {player.username} vs {game_data.opponent}")
+            if send_notification:
+                logger.info(f"New game recorded: {player.username} vs {game_data.opponent}")
 
-            # Send notification with video (pass evaluations to avoid re-evaluation)
-            await self.notification_service.send_game_notification(player, saved_game, pgn, evaluations)
+                # Send notification with video (pass evaluations to avoid re-evaluation)
+                await self.notification_service.send_game_notification(player, saved_game, pgn, evaluations)
 
-            # Mark as notified
-            await self.db.mark_game_notified(saved_game.id)
+                # Mark as notified
+                await self.db.mark_game_notified(saved_game.id)
+            else:
+                logger.info(f"Game recorded (no notification): {player.username} vs {game_data.opponent}")
 
     async def _fetch_game_pgn(self, player: TrackedPlayer, game_id: str) -> str | None:
         """Fetch PGN for a game from the appropriate API."""
