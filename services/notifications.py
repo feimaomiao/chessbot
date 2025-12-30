@@ -185,7 +185,10 @@ class NotificationService:
                     else:
                         logger.info(f"Generating video for {player.username}'s game...")
                         # Pass pre-computed evaluations to avoid re-evaluation
-                        video_bytes = await generate_game_video_async(pgn, evaluations=evaluations)
+                        # Render from tracked player's perspective
+                        video_bytes = await generate_game_video_async(
+                            pgn, evaluations=evaluations, player_color=game.player_color
+                        )
                         if video_bytes:
                             _video_cache[pgn_hash] = (video_bytes, now)
                             logger.info(f"Video generated and cached for {player.username}'s game")
@@ -200,7 +203,9 @@ class NotificationService:
 
         # Fall back to static board image if video failed or no PGN
         if file is None and game.final_fen:
-            file = get_board_discord_file(game.final_fen, f"board_{game.game_id}.png")
+            # Render from tracked player's perspective
+            flipped = game.player_color == "black"
+            file = get_board_discord_file(game.final_fen, f"board_{game.game_id}.png", flipped=flipped)
             if file:
                 embed.set_image(url=f"attachment://board_{game.game_id}.png")
 

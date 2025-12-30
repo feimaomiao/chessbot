@@ -593,6 +593,7 @@ def render_board_image(
     board: chess.Board,
     size: int = BOARD_SIZE,
     last_move: Optional[chess.Move] = None,
+    flipped: bool = False,
 ) -> Image.Image:
     """
     Render a chess board to a PIL Image.
@@ -601,6 +602,7 @@ def render_board_image(
         board: Chess board position
         size: Size of the output image in pixels
         last_move: Optional move to highlight (from/to squares)
+        flipped: If True, render from Black's perspective (a8 at bottom-left)
 
     Returns:
         PIL Image of the board
@@ -609,6 +611,7 @@ def render_board_image(
         board,
         size=size,
         lastmove=last_move,
+        flipped=flipped,
         coordinates=True,
         colors={
             "square light": "#f0d9b5",
@@ -653,6 +656,7 @@ def render_eval_bar(
     eval_score: float,
     width: int = EVAL_BAR_WIDTH,
     height: int = EVAL_BAR_HEIGHT,
+    flipped: bool = False,
 ) -> Image.Image:
     """
     Render an evaluation bar with numerical display.
@@ -661,6 +665,7 @@ def render_eval_bar(
         eval_score: Evaluation in centipawns (positive = white advantage)
         width: Width of the bar
         height: Height of the bar
+        flipped: If True, render from Black's perspective (Black section at bottom)
 
     Returns:
         PIL Image of the evaluation bar
@@ -668,52 +673,67 @@ def render_eval_bar(
     img = Image.new("RGB", (width, height), color="#404040")
     draw = ImageDraw.Draw(img)
 
-    # Check for mate positions
-    is_white_mate = eval_score >= 9900
-    is_black_mate = eval_score <= -9900
+    # When flipped, show evaluation from tracked player's (Black's) perspective
+    # Negate the score so positive = tracked player's advantage
+    display_eval = -eval_score if flipped else eval_score
 
-    # Convert to win probability
-    win_prob = eval_to_win_probability(eval_score)
+    # Check for mate positions (from tracked player's perspective)
+    is_player_mate = display_eval >= 9900  # Tracked player has mate
+    is_opponent_mate = display_eval <= -9900  # Opponent has mate
 
-    # Calculate where white section ends (from top)
-    # win_prob=1 means all white (white winning), win_prob=0 means all black
-    white_height = int(height * (1 - win_prob))
+    # Convert to win probability (from tracked player's perspective)
+    win_prob = eval_to_win_probability(display_eval)
 
-    # Draw black section (top)
-    draw.rectangle([0, 0, width, white_height], fill="#1a1a1a")
+    # Colors for the bar sections
+    # When flipped: Black (tracked player) at bottom, White at top
+    # When not flipped: White (tracked player implied) at bottom, Black at top
+    if flipped:
+        bottom_color = "#1a1a1a"  # Black section at bottom
+        top_color = "#f0f0f0"     # White section at top
+    else:
+        bottom_color = "#f0f0f0"  # White section at bottom
+        top_color = "#1a1a1a"     # Black section at top
 
-    # Draw white section (bottom)
-    draw.rectangle([0, white_height, width, height], fill="#f0f0f0")
+    # Calculate where bottom section ends (from top)
+    # win_prob=1 means tracked player winning (bottom section fills up)
+    # win_prob=0 means opponent winning (top section fills down)
+    top_section_height = int(height * (1 - win_prob))
+
+    # Draw top section
+    draw.rectangle([0, 0, width, top_section_height], fill=top_color)
+
+    # Draw bottom section
+    draw.rectangle([0, top_section_height, width, height], fill=bottom_color)
 
     # Draw center line (only if not a mate position)
-    if not is_white_mate and not is_black_mate:
+    if not is_player_mate and not is_opponent_mate:
         center_y = height // 2
         draw.line([(0, center_y), (width, center_y)], fill="#808080", width=1)
 
-    # Draw evaluation text
-    eval_text = format_eval_text(eval_score)
+    # Draw evaluation text (from tracked player's perspective)
+    eval_text = format_eval_text(display_eval)
 
     # For mate positions, use the winning player's color for text
     # Position in the opposite section with outline for visibility
-    if is_white_mate:
-        # White has mate - show white text in black section (top) for visibility
+    if is_player_mate:
+        # Tracked player has mate - show in top section for visibility
         text_y = 5
-        text_color = "#f0f0f0"  # White text
-        outline_color = "#1a1a1a"  # Dark outline
-    elif is_black_mate:
-        # Black has mate - show black text in white section (bottom) for visibility
+        text_color = bottom_color  # Use tracked player's color
+        outline_color = top_color
+    elif is_opponent_mate:
+        # Opponent has mate - show in bottom section for visibility
         text_y = height - 15
-        text_color = "#1a1a1a"  # Black text
-        outline_color = "#f0f0f0"  # Light outline
+        text_color = top_color  # Use opponent's color
+        outline_color = bottom_color
     elif win_prob > 0.5:
-        # White winning - draw in white section (bottom) with dark text
+        # Tracked player winning - draw in bottom section with contrasting text
         text_y = height - 15
-        text_color = "#1a1a1a"
+        text_color = top_color  # Contrast with bottom section
         outline_color = None
     else:
-        # Black winning - draw in black section (top) with light text
+        # Opponent winning - draw in top section with contrasting text
         text_y = 5
-        text_color = "#f0f0f0"
+        text_color = bottom_color  # Contrast with top section
         outline_color = None
 
     # Center text horizontally
@@ -737,6 +757,7 @@ def render_frame(
     eval_score: Optional[float] = None,
     board_size: int = BOARD_SIZE,
     last_move: Optional[chess.Move] = None,
+    flipped: bool = False,
 ) -> Image.Image:
     """
     Render a single frame with board and evaluation bar.
@@ -746,6 +767,7 @@ def render_frame(
         eval_score: Optional evaluation in centipawns. If None, calculated from material.
         board_size: Size of the board in pixels
         last_move: Optional move to highlight on the board
+        flipped: If True, render from Black's perspective
 
     Returns:
         PIL Image combining board and eval bar
@@ -754,8 +776,8 @@ def render_frame(
         eval_score = calculate_material_eval(board)
 
     # Render components
-    board_img = render_board_image(board, board_size, last_move)
-    eval_bar = render_eval_bar(eval_score, EVAL_BAR_WIDTH, board_size)
+    board_img = render_board_image(board, board_size, last_move, flipped=flipped)
+    eval_bar = render_eval_bar(eval_score, EVAL_BAR_WIDTH, board_size, flipped=flipped)
 
     # Combine: eval bar on the left, board on the right
     total_width = EVAL_BAR_WIDTH + board_size
@@ -767,19 +789,19 @@ def render_frame(
 
 
 def _render_frame_task(
-    args: tuple[int, chess.Board, Optional[float], int, Optional[chess.Move]]
+    args: tuple[int, chess.Board, Optional[float], int, Optional[chess.Move], bool]
 ) -> tuple[int, Image.Image]:
     """
     Render a single frame (for parallel processing).
 
     Args:
-        args: Tuple of (index, board, eval_score, board_size, last_move)
+        args: Tuple of (index, board, eval_score, board_size, last_move, flipped)
 
     Returns:
         Tuple of (index, rendered_frame) to maintain order
     """
-    idx, board, eval_score, board_size, last_move = args
-    frame = render_frame(board, eval_score, board_size, last_move=last_move)
+    idx, board, eval_score, board_size, last_move, flipped = args
+    frame = render_frame(board, eval_score, board_size, last_move=last_move, flipped=flipped)
     return (idx, frame)
 
 
@@ -788,6 +810,7 @@ def render_frames_parallel(
     evaluations: Optional[list[float]],
     board_size: int = BOARD_SIZE,
     max_workers: Optional[int] = MAX_WORKERS,
+    flipped: bool = False,
 ) -> list[Image.Image]:
     """
     Render all frames in parallel while maintaining order.
@@ -797,6 +820,7 @@ def render_frames_parallel(
         evaluations: Optional list of evaluation scores
         board_size: Size of the board in pixels
         max_workers: Maximum number of worker threads (None = default)
+        flipped: If True, render from Black's perspective
 
     Returns:
         List of rendered frames in order
@@ -805,7 +829,7 @@ def render_frames_parallel(
     tasks = []
     for i, (board, move) in enumerate(positions):
         eval_score = evaluations[i] if evaluations and i < len(evaluations) else None
-        tasks.append((i, board, eval_score, board_size, move))
+        tasks.append((i, board, eval_score, board_size, move, flipped))
 
     # Render frames in parallel
     frames = [None] * len(positions)
@@ -898,6 +922,7 @@ def generate_game_video(
     board_size: int = BOARD_SIZE,
     use_stockfish: bool = True,
     track_stats: bool = True,
+    player_color: Optional[str] = None,
 ) -> Optional[bytes]:
     """
     Generate a video of a chess game from PGN.
@@ -911,6 +936,8 @@ def generate_game_video(
         board_size: Size of the board in pixels
         use_stockfish: Whether to use Stockfish for evaluation (default True)
         track_stats: Whether to record performance statistics
+        player_color: The tracked player's color ("white" or "black").
+                     If "black", board and eval bar are rendered from Black's perspective.
 
     Returns:
         MP4 video as bytes, or None if generation fails
@@ -942,9 +969,12 @@ def generate_game_video(
         else:
             logger.info("Stockfish not available, using material evaluation")
 
+    # Determine if board should be flipped (render from tracked player's perspective)
+    flipped = player_color == "black"
+
     # Generate frames in parallel
     logger.info(f"Rendering {len(positions)} frames in parallel...")
-    frames = render_frames_parallel(positions, evaluations, board_size)
+    frames = render_frames_parallel(positions, evaluations, board_size, flipped=flipped)
     logger.info("Frame rendering complete")
 
     # Calculate FPS from frame duration
@@ -1006,6 +1036,7 @@ async def generate_game_video_async(
     frame_duration_ms: int = FRAME_DURATION_MS,
     board_size: int = BOARD_SIZE,
     use_stockfish: bool = True,
+    player_color: Optional[str] = None,
 ) -> Optional[bytes]:
     """
     Async wrapper for generate_game_video.
@@ -1017,6 +1048,8 @@ async def generate_game_video_async(
         frame_duration_ms: Duration of each frame in milliseconds
         board_size: Size of the board in pixels
         use_stockfish: Whether to use Stockfish for evaluation (default True)
+        player_color: The tracked player's color ("white" or "black").
+                     If "black", board and eval bar are rendered from Black's perspective.
 
     Returns:
         MP4 video as bytes, or None if generation fails
@@ -1032,5 +1065,6 @@ async def generate_game_video_async(
         frame_duration_ms,
         board_size,
         use_stockfish,
+        player_color=player_color,
     )
     return await loop.run_in_executor(None, func)

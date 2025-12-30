@@ -364,8 +364,8 @@ class TrackingCog(commands.Cog):
                 )
 
             if pgn:
-                # Generate video
-                video_bytes = await generate_game_video_async(pgn)
+                # Generate video from tracked player's perspective
+                video_bytes = await generate_game_video_async(pgn, player_color=game.player_color)
 
                 if video_bytes:
                     # Create embed with game info
@@ -503,8 +503,8 @@ class TrackingCog(commands.Cog):
             )
             return
 
-        # Generate video
-        video_bytes = await generate_game_video_async(pgn)
+        # Generate video from tracked player's perspective
+        video_bytes = await generate_game_video_async(pgn, player_color=game.player_color)
 
         if not video_bytes:
             await interaction.followup.send(
@@ -756,10 +756,11 @@ class TrackingCog(commands.Cog):
         description_lines.append(f"**Played:** {time_str}")
         embed.description = "\n".join(description_lines)
 
-        # Add board image
+        # Add board image (from tracked player's perspective)
         file = None
         if game.final_fen:
-            file = get_board_discord_file(game.final_fen, f"board_{game.game_id}.png")
+            flipped = game.player_color == "black"
+            file = get_board_discord_file(game.final_fen, f"board_{game.game_id}.png", flipped=flipped)
             if file:
                 embed.set_image(url=f"attachment://board_{game.game_id}.png")
 

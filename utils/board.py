@@ -10,13 +10,14 @@ from discord import File as DiscordFile
 logger = logging.getLogger(__name__)
 
 
-def render_board_png(fen: str, size: int = 400) -> Optional[bytes]:
+def render_board_png(fen: str, size: int = 400, flipped: bool = False) -> Optional[bytes]:
     """
     Render a chess board from FEN to PNG bytes.
 
     Args:
         fen: FEN string representing the board position
         size: Size of the output image in pixels
+        flipped: If True, render from Black's perspective (a8 at bottom-left)
 
     Returns:
         PNG image as bytes, or None if rendering fails
@@ -31,6 +32,7 @@ def render_board_png(fen: str, size: int = 400) -> Optional[bytes]:
         svg_data = chess.svg.board(
             board,
             size=size,
+            flipped=flipped,
             coordinates=True,
             colors={
                 "square light": "#f0d9b5",
@@ -50,18 +52,19 @@ def render_board_png(fen: str, size: int = 400) -> Optional[bytes]:
         return None
 
 
-def get_board_discord_file(fen: str, filename: str = "board.png"):
+def get_board_discord_file(fen: str, filename: str = "board.png", flipped: bool = False):
     """
     Create a Discord file object from a FEN position.
 
     Args:
         fen: FEN string representing the board position
         filename: Name for the file attachment
+        flipped: If True, render from Black's perspective
 
     Returns:
         discord.File object or None if rendering fails
     """
-    png_data = render_board_png(fen)
+    png_data = render_board_png(fen, flipped=flipped)
     if png_data is None:
         return None
 
