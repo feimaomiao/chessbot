@@ -201,6 +201,15 @@ class AdminCog(commands.Cog):
             )
             embed.add_field(name="Evaluation Performance", value=eval_info, inline=False)
 
+        # Quiz evaluation stats
+        quiz_stats = perf_stats.quiz_evaluation
+        if quiz_stats.total_operations > 0:
+            quiz_info = (
+                f"**Avg:** {quiz_stats.avg_time_per_position_ms:.1f}ms/position\n"
+                f"**Total:** {quiz_stats.total_positions} positions in {quiz_stats.total_operations} quizzes"
+            )
+            embed.add_field(name="Quiz Evaluation Performance", value=quiz_info, inline=False)
+
         # Video generation stats
         video_stats = perf_stats.video_generation
         if video_stats.total_operations > 0:
@@ -217,6 +226,14 @@ class AdminCog(commands.Cog):
                 f"**Hits:** {perf_stats.total_cache_hits} / **Misses:** {perf_stats.total_cache_misses}"
             )
             embed.add_field(name="Evaluation Cache", value=cache_info, inline=False)
+
+        # Quiz cache stats
+        if perf_stats.quiz_cache_hits > 0 or perf_stats.quiz_cache_misses > 0:
+            quiz_cache_info = (
+                f"**Hit Rate:** {perf_stats.quiz_cache_hit_rate:.1f}%\n"
+                f"**Hits:** {perf_stats.quiz_cache_hits} / **Misses:** {perf_stats.quiz_cache_misses}"
+            )
+            embed.add_field(name="Quiz Evaluation Cache", value=quiz_cache_info, inline=False)
 
         # Stats tracking info
         if perf_stats.started_at:

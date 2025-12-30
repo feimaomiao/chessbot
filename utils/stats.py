@@ -79,8 +79,11 @@ class PerformanceStats:
     """Container for all performance statistics."""
     evaluation: OperationStats = field(default_factory=OperationStats)
     video_generation: OperationStats = field(default_factory=OperationStats)
+    quiz_evaluation: OperationStats = field(default_factory=OperationStats)
     total_cache_hits: int = 0
     total_cache_misses: int = 0
+    quiz_cache_hits: int = 0
+    quiz_cache_misses: int = 0
     started_at: Optional[str] = None
 
     @property
@@ -90,12 +93,22 @@ class PerformanceStats:
             return 0.0
         return (self.total_cache_hits / total) * 100
 
+    @property
+    def quiz_cache_hit_rate(self) -> float:
+        total = self.quiz_cache_hits + self.quiz_cache_misses
+        if total == 0:
+            return 0.0
+        return (self.quiz_cache_hits / total) * 100
+
     def to_dict(self) -> dict:
         return {
             "evaluation": self.evaluation.to_dict(),
             "video_generation": self.video_generation.to_dict(),
+            "quiz_evaluation": self.quiz_evaluation.to_dict(),
             "total_cache_hits": self.total_cache_hits,
             "total_cache_misses": self.total_cache_misses,
+            "quiz_cache_hits": self.quiz_cache_hits,
+            "quiz_cache_misses": self.quiz_cache_misses,
             "started_at": self.started_at,
         }
 
@@ -104,8 +117,11 @@ class PerformanceStats:
         stats = cls()
         stats.evaluation = OperationStats.from_dict(data.get("evaluation", {}))
         stats.video_generation = OperationStats.from_dict(data.get("video_generation", {}))
+        stats.quiz_evaluation = OperationStats.from_dict(data.get("quiz_evaluation", {}))
         stats.total_cache_hits = data.get("total_cache_hits", 0)
         stats.total_cache_misses = data.get("total_cache_misses", 0)
+        stats.quiz_cache_hits = data.get("quiz_cache_hits", 0)
+        stats.quiz_cache_misses = data.get("quiz_cache_misses", 0)
         stats.started_at = data.get("started_at")
         return stats
 
@@ -161,6 +177,14 @@ class StatsTracker:
         """Record video generation timing only (no cache stats)."""
         with self._lock:
             self._stats.video_generation.record(positions, time_ms)
+            self._save_stats()
+
+    def record_quiz_evaluation(self, positions: int, time_ms: float, cache_hits: int = 0):
+        """Record a quiz evaluation operation."""
+        with self._lock:
+            self._stats.quiz_evaluation.record(positions, time_ms)
+            self._stats.quiz_cache_hits += cache_hits
+            self._stats.quiz_cache_misses += positions - cache_hits
             self._save_stats()
 
     def get_stats(self) -> PerformanceStats:

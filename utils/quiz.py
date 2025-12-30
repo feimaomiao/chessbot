@@ -2,12 +2,17 @@
 
 import asyncio
 import io
+import json
 import logging
 import os
 import random
+import threading
+import time
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from functools import partial
+from pathlib import Path
 from typing import Optional
 
 import chess
@@ -25,6 +30,100 @@ DEFAULT_MIN_EVAL_LOSS = 300
 # If player was already losing by more than this, skip the position
 # (no point quizzing on a blunder when already down 5+ pawns)
 DEFAULT_MAX_LOSING_EVAL = 500
+
+# Quiz evaluation cache settings
+QUIZ_CACHE_SIZE = 5000
+QUIZ_CACHE_FILE = "./data/quiz_eval_cache.json"
+
+
+class QuizEvalCache:
+    """Thread-safe LRU cache for quiz position evaluations."""
+
+    def __init__(self, maxsize: int = QUIZ_CACHE_SIZE):
+        self._cache: OrderedDict[str, float] = OrderedDict()
+        self._maxsize = maxsize
+        self._lock = threading.Lock()
+        self._hits = 0
+        self._misses = 0
+        self._file_path: Optional[str] = None
+
+    def get(self, fen: str) -> Optional[float]:
+        """Get cached evaluation for a FEN position."""
+        with self._lock:
+            if fen in self._cache:
+                self._cache.move_to_end(fen)
+                self._hits += 1
+                return self._cache[fen]
+            self._misses += 1
+            return None
+
+    def set(self, fen: str, score: float) -> None:
+        """Cache an evaluation for a FEN position."""
+        with self._lock:
+            if fen in self._cache:
+                self._cache.move_to_end(fen)
+            else:
+                if len(self._cache) >= self._maxsize:
+                    self._cache.popitem(last=False)
+                self._cache[fen] = score
+
+    def get_stats(self) -> tuple[int, int]:
+        """Get cache hit and miss counts."""
+        with self._lock:
+            return self._hits, self._misses
+
+    def reset_stats(self) -> tuple[int, int]:
+        """Reset and return cache hit/miss counts."""
+        with self._lock:
+            hits, misses = self._hits, self._misses
+            self._hits = 0
+            self._misses = 0
+            return hits, misses
+
+    def save_to_file(self, file_path: Optional[str] = None) -> bool:
+        """Save cache to a JSON file."""
+        file_path = file_path or self._file_path
+        if not file_path:
+            return False
+        try:
+            Path(file_path).parent.mkdir(parents=True, exist_ok=True)
+            with self._lock:
+                data = {"cache": dict(self._cache)}
+            with open(file_path, "w") as f:
+                json.dump(data, f)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save quiz cache: {e}")
+            return False
+
+    def load_from_file(self, file_path: str) -> bool:
+        """Load cache from a JSON file."""
+        self._file_path = file_path
+        try:
+            if not Path(file_path).exists():
+                return False
+            with open(file_path, "r") as f:
+                data = json.load(f)
+            with self._lock:
+                self._cache = OrderedDict(data.get("cache", {}))
+            logger.info(f"Loaded {len(self._cache)} quiz cache entries")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to load quiz cache: {e}")
+            return False
+
+
+# Global quiz evaluation cache
+_quiz_eval_cache: Optional[QuizEvalCache] = None
+
+
+def get_quiz_eval_cache() -> QuizEvalCache:
+    """Get or create the global quiz evaluation cache."""
+    global _quiz_eval_cache
+    if _quiz_eval_cache is None:
+        _quiz_eval_cache = QuizEvalCache()
+        _quiz_eval_cache.load_from_file(QUIZ_CACHE_FILE)
+    return _quiz_eval_cache
 
 
 @dataclass
@@ -61,17 +160,57 @@ def _get_stockfish_path() -> Optional[str]:
     return None
 
 
+def _evaluate_fen(engine, fen: str, board_turn: chess.Color, cache: QuizEvalCache) -> float:
+    """
+    Evaluate a position, using cache if available.
+
+    Args:
+        engine: Stockfish engine instance
+        fen: FEN string of position to evaluate
+        board_turn: Whose turn it is in the position
+        cache: Quiz evaluation cache
+
+    Returns:
+        Evaluation in centipawns from white's perspective
+    """
+    # Check cache first
+    cached = cache.get(fen)
+    if cached is not None:
+        return cached
+
+    # Evaluate with engine
+    engine.set_fen_position(fen)
+    eval_data = engine.get_evaluation()
+
+    if eval_data["type"] == "cp":
+        eval_score = float(eval_data["value"])
+    elif eval_data["type"] == "mate":
+        mate_moves = eval_data["value"]
+        eval_score = 10000 - abs(mate_moves) if mate_moves > 0 else -10000 + abs(mate_moves)
+    else:
+        eval_score = 0.0
+
+    # Adjust for side to move (Stockfish returns from side-to-move perspective)
+    if board_turn == chess.BLACK:
+        eval_score = -eval_score
+
+    # Cache the result
+    cache.set(fen, eval_score)
+    return eval_score
+
+
 def _analyze_position(args: tuple) -> tuple:
     """
     Analyze a single position with its own Stockfish instance.
 
     Args:
-        args: (index, fen, player_move_uci, is_white)
+        args: (index, fen, player_move_uci, is_white, stockfish_path)
 
     Returns:
         (index, best_move_uci, eval_before, eval_after_best, eval_after_played) or None on error
     """
     idx, fen, player_move_uci, is_white, stockfish_path = args
+    cache = get_quiz_eval_cache()
 
     try:
         from stockfish import Stockfish
@@ -95,49 +234,22 @@ def _analyze_position(args: tuple) -> tuple:
             engine.send_quit_command()
             return (idx, None, None, None, None)
 
-        # Evaluate position before move
-        eval_data = engine.get_evaluation()
-        if eval_data["type"] == "cp":
-            eval_before = float(eval_data["value"])
-        elif eval_data["type"] == "mate":
-            mate_moves = eval_data["value"]
-            eval_before = 10000 - abs(mate_moves) if mate_moves > 0 else -10000 + abs(mate_moves)
-        else:
-            eval_before = 0.0
+        # Evaluate position before move (with caching)
+        eval_before = _evaluate_fen(engine, fen, board.turn, cache)
 
-        # Adjust for side to move (Stockfish returns from side-to-move perspective)
-        if board.turn == chess.BLACK:
-            eval_before = -eval_before
-
-        # Evaluate after best move
+        # Evaluate after best move (with caching)
         board_after_best = board.copy()
         board_after_best.push(best_move)
-        engine.set_fen_position(board_after_best.fen())
-        eval_data = engine.get_evaluation()
-        if eval_data["type"] == "cp":
-            eval_after_best = float(eval_data["value"])
-        elif eval_data["type"] == "mate":
-            mate_moves = eval_data["value"]
-            eval_after_best = 10000 - abs(mate_moves) if mate_moves > 0 else -10000 + abs(mate_moves)
-        else:
-            eval_after_best = 0.0
-        if board_after_best.turn == chess.BLACK:
-            eval_after_best = -eval_after_best
+        eval_after_best = _evaluate_fen(
+            engine, board_after_best.fen(), board_after_best.turn, cache
+        )
 
-        # Evaluate after player's move
+        # Evaluate after player's move (with caching)
         board_after_player = board.copy()
         board_after_player.push(player_move)
-        engine.set_fen_position(board_after_player.fen())
-        eval_data = engine.get_evaluation()
-        if eval_data["type"] == "cp":
-            eval_after_played = float(eval_data["value"])
-        elif eval_data["type"] == "mate":
-            mate_moves = eval_data["value"]
-            eval_after_played = 10000 - abs(mate_moves) if mate_moves > 0 else -10000 + abs(mate_moves)
-        else:
-            eval_after_played = 0.0
-        if board_after_player.turn == chess.BLACK:
-            eval_after_played = -eval_after_played
+        eval_after_played = _evaluate_fen(
+            engine, board_after_player.fen(), board_after_player.turn, cache
+        )
 
         engine.send_quit_command()
         return (idx, best_move_uci, eval_before, eval_after_best, eval_after_played)
@@ -215,9 +327,14 @@ def find_missed_moves_parallel(
         for pos in positions_to_analyze
     ]
 
-    # Run analysis in parallel
+    # Get cache and reset stats for this operation
+    cache = get_quiz_eval_cache()
+    cache.reset_stats()
+
+    # Run analysis in parallel with timing
     num_workers = min(len(tasks), os.cpu_count() or 4)
     results = {}
+    start_time = time.time()
 
     with ThreadPoolExecutor(max_workers=num_workers) as executor:
         futures = {executor.submit(_analyze_position, task): task[0] for task in tasks}
@@ -225,6 +342,21 @@ def find_missed_moves_parallel(
             result = future.result()
             if result:
                 results[result[0]] = result
+
+    elapsed_ms = (time.time() - start_time) * 1000
+
+    # Record stats and save cache
+    cache_hits, cache_misses = cache.get_stats()
+    total_evals = cache_hits + cache_misses
+
+    from utils.stats import get_stats_tracker
+    get_stats_tracker().record_quiz_evaluation(total_evals, elapsed_ms, cache_hits)
+    cache.save_to_file(QUIZ_CACHE_FILE)
+
+    logger.info(
+        f"Quiz analysis completed in {elapsed_ms:.0f}ms "
+        f"({total_evals} evals, {cache_hits} cache hits)"
+    )
 
     # Build MissedMove objects from results
     missed_moves = []

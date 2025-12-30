@@ -197,6 +197,7 @@ class QuizService:
         embed.add_field(name="Move", value=f"#{missed_move.move_number}", inline=True)
         embed.add_field(name="Difficulty", value=difficulty.capitalize(), inline=True)
         embed.add_field(name="To Play", value=whose_turn, inline=True)
+        embed.add_field(name="Eval", value=format_eval(missed_move.eval_before), inline=True)
 
         embed.set_image(url="attachment://quiz_position.png")
 
@@ -364,10 +365,6 @@ class QuizService:
         else:
             embed = discord.Embed(
                 title="Answer Revealed",
-                description=(
-                    f"This was from {quiz.player_username}'s game "
-                    f"against {quiz.opponent_username}."
-                ),
                 color=discord.Color.orange(),
             )
 
