@@ -477,6 +477,75 @@ class DatabaseManager:
 
         return (player, game)
 
+    async def get_random_lost_game_for_player(
+        self, player_id: int
+    ) -> Optional[tuple[TrackedPlayer, Game]]:
+        """
+        Get a random game where a specific tracked player lost by checkmate or resignation.
+
+        Args:
+            player_id: The tracked player's database ID
+
+        Returns:
+            Tuple of (TrackedPlayer, Game) or None if no suitable games found
+        """
+        cursor = await self._connection.execute(
+            """SELECT
+                tp.id as tp_id, tp.guild_id, tp.platform as tp_platform,
+                tp.username, tp.display_name, tp.discord_user_id,
+                tp.added_by, tp.added_at,
+                g.id as g_id, g.player_id, g.game_id, g.platform as g_platform,
+                g.time_control, g.time_control_display, g.result, g.player_color,
+                g.rating_after, g.rating_change, g.opponent, g.opponent_rating,
+                g.played_at, g.game_url, g.final_fen, g.notified, g.accuracy, g.termination
+               FROM tracked_players tp
+               JOIN games g ON g.player_id = tp.id
+               WHERE tp.id = ?
+                 AND g.result = 'loss'
+                 AND g.termination IN ('checkmate', 'resign')
+               ORDER BY RANDOM()
+               LIMIT 1""",
+            (player_id,),
+        )
+        row = await cursor.fetchone()
+
+        if not row:
+            return None
+
+        player = TrackedPlayer(
+            id=row["tp_id"],
+            guild_id=row["guild_id"],
+            platform=row["tp_platform"],
+            username=row["username"],
+            display_name=row["display_name"],
+            discord_user_id=row["discord_user_id"],
+            added_by=row["added_by"],
+            added_at=datetime.fromisoformat(row["added_at"]) if row["added_at"] else None,
+        )
+
+        game = Game(
+            id=row["g_id"],
+            player_id=row["player_id"],
+            game_id=row["game_id"],
+            platform=row["g_platform"],
+            time_control=row["time_control"],
+            time_control_display=row["time_control_display"],
+            result=row["result"],
+            player_color=row["player_color"],
+            rating_after=row["rating_after"],
+            rating_change=row["rating_change"],
+            opponent=row["opponent"],
+            opponent_rating=row["opponent_rating"],
+            played_at=datetime.fromisoformat(row["played_at"]) if row["played_at"] else None,
+            game_url=row["game_url"],
+            final_fen=row["final_fen"],
+            notified=bool(row["notified"]),
+            accuracy=row["accuracy"],
+            termination=row["termination"],
+        )
+
+        return (player, game)
+
     async def get_random_lost_game_global(self) -> Optional[tuple[TrackedPlayer, Game]]:
         """
         Get a random game where any tracked player lost by checkmate or resignation.

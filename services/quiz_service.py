@@ -10,7 +10,7 @@ import discord
 from database import DatabaseManager, ActiveQuiz
 from utils.board import get_board_discord_file
 from utils.notation import parse_user_move
-from utils.quiz import find_missed_moves, select_quiz_position, classify_difficulty
+from utils.quiz import find_missed_moves_async, select_quiz_position, classify_difficulty
 
 if TYPE_CHECKING:
     from services.tracker import GameTracker
@@ -96,6 +96,7 @@ class QuizService:
         self,
         interaction: discord.Interaction,
         global_search: bool = False,
+        player_id: Optional[int] = None,
     ) -> bool:
         """
         Start a new quiz in the channel.
@@ -103,6 +104,7 @@ class QuizService:
         Args:
             interaction: The Discord interaction
             global_search: If True, search across all tracked players globally
+            player_id: If provided, only use games from this specific player
 
         Returns:
             True if quiz started successfully, False otherwise
@@ -112,12 +114,16 @@ class QuizService:
 
         # Try to find a suitable game with missed moves
         for attempt in range(MAX_GAME_RETRIES):
-            if global_search:
+            if player_id:
+                result = await self.db.get_random_lost_game_for_player(player_id)
+            elif global_search:
                 result = await self.db.get_random_lost_game_global()
             else:
                 result = await self.db.get_random_lost_game_with_player(interaction.guild_id)
             if not result:
-                if global_search:
+                if player_id:
+                    logger.info(f"No lost games found for player {player_id}")
+                elif global_search:
                     logger.info("No lost games found globally")
                 else:
                     logger.info(f"No lost games found in guild {interaction.guild_id}")
@@ -136,7 +142,8 @@ class QuizService:
                 continue
 
             # Find missed moves (blunders with 300+ centipawn loss)
-            missed_moves = find_missed_moves(pgn, game.player_color, min_eval_loss=300)
+            # Run in thread pool to avoid blocking Discord heartbeat
+            missed_moves = await find_missed_moves_async(pgn, game.player_color, min_eval_loss=300)
 
             if not missed_moves:
                 logger.info(f"No blunders (300+ cp) found in game {game.game_id}")

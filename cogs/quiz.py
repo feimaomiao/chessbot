@@ -1,6 +1,7 @@
 """Commands for chess quizzes."""
 
 import logging
+from typing import Literal, Optional
 
 import discord
 from discord import app_commands
@@ -11,6 +12,8 @@ from services.tracker import GameTracker
 from services.quiz_service import QuizService
 
 logger = logging.getLogger(__name__)
+
+PlatformChoice = Literal["chesscom", "lichess"]
 
 
 class QuizCog(commands.Cog):
@@ -33,11 +36,15 @@ class QuizCog(commands.Cog):
         description="Start a chess puzzle from a tracked player's game",
     )
     @app_commands.describe(
+        platform="Filter by chess platform (optional)",
+        username="Filter by specific player username (optional)",
         global_search="Search across all tracked players from all servers (default: False)",
     )
     async def quiz(
         self,
         interaction: discord.Interaction,
+        platform: Optional[PlatformChoice] = None,
+        username: Optional[str] = None,
         global_search: bool = False,
     ):
         """Start a chess quiz puzzle."""
@@ -52,8 +59,41 @@ class QuizCog(commands.Cog):
             )
             return
 
-        # Check for tracked players (only for local search)
-        if not global_search:
+        # If platform and username provided, find the specific player
+        player_id = None
+        if platform and username:
+            # First check in current guild
+            player = await self.db.get_tracked_player(
+                interaction.guild_id, platform, username
+            )
+            # If not found and global search enabled, search globally
+            if not player and global_search:
+                # Search across all guilds for this player
+                all_players = await self.db.get_all_tracked_players()
+                for p in all_players:
+                    if p.platform == platform and p.username.lower() == username.lower():
+                        player = p
+                        break
+
+            if not player:
+                await interaction.followup.send(
+                    f"Player **{username}** on **{platform}** is not being tracked. "
+                    f"Use `/track` to add them first.",
+                    ephemeral=True,
+                )
+                return
+
+            player_id = player.id
+        elif platform or username:
+            # Only one of platform/username provided
+            await interaction.followup.send(
+                "Please provide both `platform` and `username` to filter by a specific player.",
+                ephemeral=True,
+            )
+            return
+
+        # Check for tracked players (only for local search without specific player)
+        if not global_search and not player_id:
             players = await self.db.get_tracked_players(interaction.guild_id)
             if not players:
                 await interaction.followup.send(
@@ -65,10 +105,19 @@ class QuizCog(commands.Cog):
                 return
 
         # Start the quiz
-        success = await self.quiz_service.start_quiz(interaction, global_search=global_search)
+        success = await self.quiz_service.start_quiz(
+            interaction, global_search=global_search, player_id=player_id
+        )
 
         if not success:
-            if global_search:
+            if player_id:
+                await interaction.followup.send(
+                    f"Could not generate a quiz puzzle for **{username}**. "
+                    "They may not have any lost games (by checkmate or resignation) "
+                    "with blunders (300+ centipawn loss), or Stockfish is unavailable.",
+                    ephemeral=True,
+                )
+            elif global_search:
                 await interaction.followup.send(
                     "Could not generate a quiz puzzle. "
                     "No tracked players across any server have lost games "
