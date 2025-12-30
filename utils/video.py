@@ -53,6 +53,7 @@ PIECE_VALUES = {
 # Import performance settings from config
 from config import (
     STOCKFISH_DEPTH as CONFIG_STOCKFISH_DEPTH,
+    QUIZ_STOCKFISH_DEPTH as CONFIG_QUIZ_STOCKFISH_DEPTH,
     BOARD_SIZE as CONFIG_BOARD_SIZE,
     MAX_EVAL_WORKERS,
     USE_MATERIAL_EVAL_ONLY,
@@ -74,6 +75,7 @@ EVAL_CACHE_SIZE = 10000  # Number of positions to cache
 
 # Stockfish settings
 STOCKFISH_DEPTH = CONFIG_STOCKFISH_DEPTH  # Analysis depth (higher = slower but more accurate)
+QUIZ_STOCKFISH_DEPTH = CONFIG_QUIZ_STOCKFISH_DEPTH  # Higher depth for quiz analysis
 STOCKFISH_PATHS = [
     "/usr/local/bin/stockfish",
     "/usr/bin/stockfish",
@@ -516,6 +518,33 @@ class StockfishEvaluator:
 
         return results, cache_hits
 
+    def get_best_move(self, board: chess.Board) -> Optional[chess.Move]:
+        """
+        Get Stockfish's best move for the given position.
+
+        Args:
+            board: Chess board position to analyze
+
+        Returns:
+            The best move as a chess.Move object, or None if unavailable
+        """
+        if not self.engine:
+            return None
+
+        # Can't get best move for game-over positions
+        if board.is_game_over():
+            return None
+
+        try:
+            self.engine.set_fen_position(board.fen())
+            best_move_uci = self.engine.get_best_move()
+            if best_move_uci:
+                return chess.Move.from_uci(best_move_uci)
+        except Exception as e:
+            logger.error(f"Error getting best move: {e}")
+
+        return None
+
     def close(self):
         """Clean up the Stockfish engine."""
         if self.engine:
@@ -529,6 +558,9 @@ class StockfishEvaluator:
 # Global evaluator instance (lazy initialization)
 _stockfish_evaluator: Optional[StockfishEvaluator] = None
 
+# Separate quiz evaluator with higher depth
+_quiz_stockfish_evaluator: Optional[StockfishEvaluator] = None
+
 
 def get_stockfish_evaluator() -> StockfishEvaluator:
     """Get or create the global Stockfish evaluator."""
@@ -536,6 +568,14 @@ def get_stockfish_evaluator() -> StockfishEvaluator:
     if _stockfish_evaluator is None:
         _stockfish_evaluator = StockfishEvaluator()
     return _stockfish_evaluator
+
+
+def get_quiz_stockfish_evaluator() -> StockfishEvaluator:
+    """Get or create the quiz-specific Stockfish evaluator with higher depth."""
+    global _quiz_stockfish_evaluator
+    if _quiz_stockfish_evaluator is None:
+        _quiz_stockfish_evaluator = StockfishEvaluator(depth=QUIZ_STOCKFISH_DEPTH)
+    return _quiz_stockfish_evaluator
 
 
 def calculate_material_eval(board: chess.Board) -> float:

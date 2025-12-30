@@ -47,3 +47,27 @@ class Game:
     notified: bool = False
     accuracy: Optional[float] = None  # Player's accuracy percentage (0-100)
     termination: Optional[str] = None  # How game ended: checkmate, timeout, resign, aborted, agreed, stalemate, repetition
+
+
+@dataclass
+class ActiveQuiz:
+    """An active quiz in a Discord channel."""
+
+    channel_id: int  # Discord channel ID (primary key)
+    guild_id: int
+    position_fen: str
+    correct_move_san: str
+    played_move_san: str  # The blunder that was actually played
+    game_url: str
+    player_username: str
+    opponent_username: str
+    move_number: int
+    difficulty: str
+    eval_before: float  # Evaluation before the move (centipawns)
+    eval_after_best: float  # Evaluation after best move
+    eval_after_played: float  # Evaluation after the blunder
+    started_at: Optional[datetime] = None
+
+    def __post_init__(self):
+        if self.started_at is None:
+            self.started_at = datetime.utcnow()
