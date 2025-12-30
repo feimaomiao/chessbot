@@ -302,14 +302,18 @@ class GameTracker:
             return await self.lichess_client.validate_player(username)
         return False
 
-    async def initialize_player_history(self, player: TrackedPlayer) -> int:
+    async def initialize_player_history(
+        self, player: TrackedPlayer, max_games: int = 1000
+    ) -> int:
         """Fetch and store game history for a newly tracked player.
 
-        Fetches games from the last 24 hours for summary purposes. If no games
-        are found in that window, fetches the most recent game from history
-        so future polling has a reference point.
+        Backfills up to max_games from the player's history to populate
+        the database for quiz functionality. Games are stored silently
+        without sending notifications or calculating accuracy.
 
-        Games are stored silently without sending notifications.
+        Args:
+            player: The tracked player to initialize
+            max_games: Maximum number of games to backfill (default: 1000)
         """
         if player.platform == Platform.CHESSCOM:
             client = self.chesscom_client
@@ -317,16 +321,15 @@ class GameTracker:
             client = self.lichess_client
 
         try:
-            # Fetch games from the last 24 hours
-            since = datetime.utcnow() - timedelta(hours=24)
-            games = await client.get_recent_games(player.username, since=since)
+            # Backfill historical games for quiz availability
+            logger.info(f"Backfilling up to {max_games} games for {player.username}...")
+            games = await client.get_games_for_analysis(player.username, max_games=max_games)
 
-            # If no games in last 24 hours, fetch the most recent game from history
-            # so we have a reference point for future polling
             if not games:
-                logger.info(f"No games in last 24h for {player.username}, fetching most recent game")
-                historical_games = await client.get_games_for_analysis(player.username, max_games=1)
-                games = historical_games[:1] if historical_games else []
+                logger.info(f"No games found for {player.username}")
+                return 0
+
+            logger.info(f"Fetched {len(games)} games for {player.username}")
 
             # Sort oldest first for proper rating calculation
             games = sorted(games, key=lambda g: g.played_at)
@@ -376,10 +379,17 @@ class GameTracker:
             logger.error(f"Error initializing history for {player.username}: {e}")
             return 0
 
-    async def refresh_guild(self, guild_id: int) -> int:
-        """Manually refresh all tracked players for a guild. Returns number of new games found."""
+    async def refresh_guild(self, guild_id: int, min_games: int = 1000) -> tuple[int, int]:
+        """Manually refresh all tracked players for a guild.
+
+        Also backfills historical games for players with fewer than min_games.
+
+        Returns:
+            Tuple of (new_games_count, backfilled_games_count)
+        """
         players = await self.db.get_tracked_players(guild_id)
         new_games = 0
+        backfilled_games = 0
 
         for player in players:
             if player.platform == Platform.CHESSCOM:
@@ -388,6 +398,19 @@ class GameTracker:
                 client = self.lichess_client
 
             try:
+                # Check if player needs backfill
+                game_count = await self.db.get_player_game_count(player.id)
+                if game_count < min_games:
+                    logger.info(
+                        f"{player.username} has {game_count} games, backfilling to {min_games}..."
+                    )
+                    backfilled = await self.initialize_player_history(
+                        player, max_games=min_games
+                    )
+                    # Subtract existing games since initialize_player_history skips duplicates
+                    backfilled_games += max(0, backfilled - game_count)
+
+                # Also fetch any new games since last poll
                 last_game_time = await self.db.get_latest_game_time(player.id)
                 if last_game_time is None:
                     last_game_time = datetime.utcnow() - timedelta(hours=1)
@@ -402,4 +425,4 @@ class GameTracker:
             except Exception as e:
                 logger.error(f"Error refreshing {player.username}: {e}")
 
-        return new_games
+        return new_games, backfilled_games

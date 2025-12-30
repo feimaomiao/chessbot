@@ -1,7 +1,7 @@
 import aiosqlite
 from datetime import datetime, timedelta
 from typing import Optional
-from .models import Guild, TrackedPlayer, Game
+from .models import Guild, TrackedPlayer, Game, ActiveQuiz
 
 
 class DatabaseManager:
@@ -69,6 +69,36 @@ class DatabaseManager:
             CREATE INDEX IF NOT EXISTS idx_games_player_id ON games(player_id);
             CREATE INDEX IF NOT EXISTS idx_games_played_at ON games(played_at);
             CREATE INDEX IF NOT EXISTS idx_tracked_players_guild ON tracked_players(guild_id);
+
+            CREATE TABLE IF NOT EXISTS active_quizzes (
+                channel_id INTEGER PRIMARY KEY,
+                guild_id INTEGER NOT NULL,
+                position_fen TEXT NOT NULL,
+                correct_move_san TEXT NOT NULL,
+                played_move_san TEXT NOT NULL,
+                game_url TEXT NOT NULL,
+                player_username TEXT NOT NULL,
+                opponent_username TEXT NOT NULL,
+                move_number INTEGER NOT NULL,
+                difficulty TEXT NOT NULL,
+                eval_before REAL NOT NULL,
+                eval_after_best REAL NOT NULL,
+                eval_after_played REAL NOT NULL,
+                started_at DATETIME NOT NULL,
+                FOREIGN KEY (guild_id) REFERENCES guilds(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS quiz_scores (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                username TEXT NOT NULL,
+                score INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (guild_id) REFERENCES guilds(id),
+                UNIQUE(guild_id, user_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_quiz_scores_guild ON quiz_scores(guild_id);
         """)
         await self._connection.commit()
 
@@ -98,6 +128,16 @@ class DatabaseManager:
             await self._connection.commit()
         except Exception:
             pass  # Column already exists
+
+        # Migration: Add eval columns to active_quizzes if they don't exist
+        for col in ["eval_before", "eval_after_best", "eval_after_played"]:
+            try:
+                await self._connection.execute(
+                    f"ALTER TABLE active_quizzes ADD COLUMN {col} REAL DEFAULT 0"
+                )
+                await self._connection.commit()
+            except Exception:
+                pass  # Column already exists
 
     # Guild operations
     async def get_or_create_guild(self, guild_id: int) -> Guild:
@@ -347,6 +387,15 @@ class DatabaseManager:
         )
         return await cursor.fetchone() is not None
 
+    async def get_player_game_count(self, player_id: int) -> int:
+        """Get the total number of games stored for a player."""
+        cursor = await self._connection.execute(
+            "SELECT COUNT(*) as count FROM games WHERE player_id = ?",
+            (player_id,),
+        )
+        row = await cursor.fetchone()
+        return row["count"] if row else 0
+
     async def get_recent_games(self, player_id: int, limit: int = 5) -> list[Game]:
         """Get the most recent games for a player."""
         cursor = await self._connection.execute(
@@ -358,6 +407,138 @@ class DatabaseManager:
         )
         rows = await cursor.fetchall()
         return [self._row_to_game(row) for row in rows]
+
+    async def get_random_lost_game_with_player(
+        self, guild_id: int
+    ) -> Optional[tuple[TrackedPlayer, Game]]:
+        """
+        Get a random game where the tracked player lost by checkmate or resignation.
+
+        Args:
+            guild_id: The Discord guild ID
+
+        Returns:
+            Tuple of (TrackedPlayer, Game) or None if no suitable games found
+        """
+        cursor = await self._connection.execute(
+            """SELECT
+                tp.id as tp_id, tp.guild_id, tp.platform as tp_platform,
+                tp.username, tp.display_name, tp.discord_user_id,
+                tp.added_by, tp.added_at,
+                g.id as g_id, g.player_id, g.game_id, g.platform as g_platform,
+                g.time_control, g.time_control_display, g.result, g.player_color,
+                g.rating_after, g.rating_change, g.opponent, g.opponent_rating,
+                g.played_at, g.game_url, g.final_fen, g.notified, g.accuracy, g.termination
+               FROM tracked_players tp
+               JOIN games g ON g.player_id = tp.id
+               WHERE tp.guild_id = ?
+                 AND g.result = 'loss'
+                 AND g.termination IN ('checkmate', 'resign')
+               ORDER BY RANDOM()
+               LIMIT 1""",
+            (guild_id,),
+        )
+        row = await cursor.fetchone()
+
+        if not row:
+            return None
+
+        player = TrackedPlayer(
+            id=row["tp_id"],
+            guild_id=row["guild_id"],
+            platform=row["tp_platform"],
+            username=row["username"],
+            display_name=row["display_name"],
+            discord_user_id=row["discord_user_id"],
+            added_by=row["added_by"],
+            added_at=datetime.fromisoformat(row["added_at"]) if row["added_at"] else None,
+        )
+
+        game = Game(
+            id=row["g_id"],
+            player_id=row["player_id"],
+            game_id=row["game_id"],
+            platform=row["g_platform"],
+            time_control=row["time_control"],
+            time_control_display=row["time_control_display"],
+            result=row["result"],
+            player_color=row["player_color"],
+            rating_after=row["rating_after"],
+            rating_change=row["rating_change"],
+            opponent=row["opponent"],
+            opponent_rating=row["opponent_rating"],
+            played_at=datetime.fromisoformat(row["played_at"]) if row["played_at"] else None,
+            game_url=row["game_url"],
+            final_fen=row["final_fen"],
+            notified=bool(row["notified"]),
+            accuracy=row["accuracy"],
+            termination=row["termination"],
+        )
+
+        return (player, game)
+
+    async def get_random_lost_game_global(self) -> Optional[tuple[TrackedPlayer, Game]]:
+        """
+        Get a random game where any tracked player lost by checkmate or resignation.
+        Searches across all guilds/servers.
+
+        Returns:
+            Tuple of (TrackedPlayer, Game) or None if no suitable games found
+        """
+        cursor = await self._connection.execute(
+            """SELECT
+                tp.id as tp_id, tp.guild_id, tp.platform as tp_platform,
+                tp.username, tp.display_name, tp.discord_user_id,
+                tp.added_by, tp.added_at,
+                g.id as g_id, g.player_id, g.game_id, g.platform as g_platform,
+                g.time_control, g.time_control_display, g.result, g.player_color,
+                g.rating_after, g.rating_change, g.opponent, g.opponent_rating,
+                g.played_at, g.game_url, g.final_fen, g.notified, g.accuracy, g.termination
+               FROM tracked_players tp
+               JOIN games g ON g.player_id = tp.id
+               WHERE g.result = 'loss'
+                 AND g.termination IN ('checkmate', 'resign')
+               ORDER BY RANDOM()
+               LIMIT 1"""
+        )
+        row = await cursor.fetchone()
+
+        if not row:
+            return None
+
+        player = TrackedPlayer(
+            id=row["tp_id"],
+            guild_id=row["guild_id"],
+            platform=row["tp_platform"],
+            username=row["username"],
+            display_name=row["display_name"],
+            discord_user_id=row["discord_user_id"],
+            added_by=row["added_by"],
+            added_at=datetime.fromisoformat(row["added_at"]) if row["added_at"] else None,
+        )
+
+        game = Game(
+            id=row["g_id"],
+            player_id=row["player_id"],
+            game_id=row["game_id"],
+            platform=row["g_platform"],
+            time_control=row["time_control"],
+            time_control_display=row["time_control_display"],
+            result=row["result"],
+            player_color=row["player_color"],
+            rating_after=row["rating_after"],
+            rating_change=row["rating_change"],
+            opponent=row["opponent"],
+            opponent_rating=row["opponent_rating"],
+            played_at=datetime.fromisoformat(row["played_at"]) if row["played_at"] else None,
+            game_url=row["game_url"],
+            final_fen=row["final_fen"],
+            notified=bool(row["notified"]),
+            accuracy=row["accuracy"],
+            termination=row["termination"],
+        )
+
+        return (player, game)
 
     async def get_game_by_id(self, player_id: int, game_id: str) -> Optional[Game]:
         """Get a specific game by its platform game ID."""
@@ -496,3 +677,121 @@ class DatabaseManager:
             accuracy=row["accuracy"] if "accuracy" in row.keys() else None,
             termination=row["termination"] if "termination" in row.keys() else None,
         )
+
+    # Quiz operations
+    async def save_quiz(self, quiz: ActiveQuiz) -> ActiveQuiz:
+        """Save an active quiz to the database."""
+        await self._connection.execute(
+            """INSERT OR REPLACE INTO active_quizzes
+               (channel_id, guild_id, position_fen, correct_move_san, played_move_san,
+                game_url, player_username, opponent_username, move_number, difficulty,
+                eval_before, eval_after_best, eval_after_played, started_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (quiz.channel_id, quiz.guild_id, quiz.position_fen, quiz.correct_move_san,
+             quiz.played_move_san, quiz.game_url, quiz.player_username, quiz.opponent_username,
+             quiz.move_number, quiz.difficulty, quiz.eval_before, quiz.eval_after_best,
+             quiz.eval_after_played, quiz.started_at),
+        )
+        await self._connection.commit()
+        return quiz
+
+    async def get_quiz(self, channel_id: int) -> Optional[ActiveQuiz]:
+        """Get an active quiz by channel ID."""
+        cursor = await self._connection.execute(
+            "SELECT * FROM active_quizzes WHERE channel_id = ?",
+            (channel_id,),
+        )
+        row = await cursor.fetchone()
+        return self._row_to_quiz(row) if row else None
+
+    async def delete_quiz(self, channel_id: int) -> bool:
+        """Delete an active quiz."""
+        cursor = await self._connection.execute(
+            "DELETE FROM active_quizzes WHERE channel_id = ?",
+            (channel_id,),
+        )
+        await self._connection.commit()
+        return cursor.rowcount > 0
+
+    def _row_to_quiz(self, row) -> ActiveQuiz:
+        """Convert a database row to ActiveQuiz."""
+        return ActiveQuiz(
+            channel_id=row["channel_id"],
+            guild_id=row["guild_id"],
+            position_fen=row["position_fen"],
+            correct_move_san=row["correct_move_san"],
+            played_move_san=row["played_move_san"],
+            game_url=row["game_url"],
+            player_username=row["player_username"],
+            opponent_username=row["opponent_username"],
+            move_number=row["move_number"],
+            difficulty=row["difficulty"],
+            eval_before=row["eval_before"],
+            eval_after_best=row["eval_after_best"],
+            eval_after_played=row["eval_after_played"],
+            started_at=datetime.fromisoformat(row["started_at"]) if row["started_at"] else None,
+        )
+
+    # Quiz score operations
+    async def add_quiz_point(self, guild_id: int, user_id: int, username: str) -> int:
+        """
+        Add a point to a user's quiz score.
+
+        Args:
+            guild_id: The Discord guild ID
+            user_id: The Discord user ID
+            username: The user's display name (updated on each point)
+
+        Returns:
+            The user's new total score
+        """
+        # Use INSERT OR REPLACE with score increment
+        await self._connection.execute(
+            """INSERT INTO quiz_scores (guild_id, user_id, username, score)
+               VALUES (?, ?, ?, 1)
+               ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                   score = score + 1,
+                   username = excluded.username""",
+            (guild_id, user_id, username),
+        )
+        await self._connection.commit()
+
+        # Get the new score
+        cursor = await self._connection.execute(
+            "SELECT score FROM quiz_scores WHERE guild_id = ? AND user_id = ?",
+            (guild_id, user_id),
+        )
+        row = await cursor.fetchone()
+        return row["score"] if row else 1
+
+    async def get_quiz_leaderboard(
+        self, guild_id: int, limit: int = 10
+    ) -> list[tuple[int, str, int]]:
+        """
+        Get the quiz leaderboard for a guild.
+
+        Args:
+            guild_id: The Discord guild ID
+            limit: Maximum number of entries to return
+
+        Returns:
+            List of (user_id, username, score) tuples, ordered by score descending
+        """
+        cursor = await self._connection.execute(
+            """SELECT user_id, username, score FROM quiz_scores
+               WHERE guild_id = ?
+               ORDER BY score DESC
+               LIMIT ?""",
+            (guild_id, limit),
+        )
+        rows = await cursor.fetchall()
+        return [(row["user_id"], row["username"], row["score"]) for row in rows]
+
+    async def get_user_quiz_score(self, guild_id: int, user_id: int) -> int:
+        """Get a user's quiz score in a guild."""
+        cursor = await self._connection.execute(
+            "SELECT score FROM quiz_scores WHERE guild_id = ? AND user_id = ?",
+            (guild_id, user_id),
+        )
+        row = await cursor.fetchone()
+        return row["score"] if row else 0

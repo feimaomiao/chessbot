@@ -54,6 +54,9 @@ class GameResult:
 # Stockfish depth: lower = faster, less accurate (range: 1-20, default: 12)
 STOCKFISH_DEPTH = int(os.getenv("STOCKFISH_DEPTH", "12"))
 
+# Quiz-specific Stockfish depth (higher for better puzzle accuracy, default: 15)
+QUIZ_STOCKFISH_DEPTH = int(os.getenv("QUIZ_STOCKFISH_DEPTH", "15"))
+
 # Board size in pixels: smaller = faster rendering (default: 400)
 BOARD_SIZE = int(os.getenv("BOARD_SIZE", "400"))
 

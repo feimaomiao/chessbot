@@ -296,11 +296,18 @@ class TrackingCog(commands.Cog):
             )
             return
 
-        new_games = await self.tracker.refresh_guild(interaction.guild_id)
+        new_games, backfilled = await self.tracker.refresh_guild(interaction.guild_id)
 
+        # Build response message
+        parts = []
         if new_games > 0:
+            parts.append(f"**{new_games}** new game(s)")
+        if backfilled > 0:
+            parts.append(f"**{backfilled}** historical game(s) backfilled")
+
+        if parts:
             await interaction.followup.send(
-                f"Refresh complete! Found **{new_games}** new game(s).",
+                f"Refresh complete! {', '.join(parts)}.",
                 ephemeral=True,
             )
         else:

@@ -21,8 +21,10 @@ from utils.video import get_eval_cache
 from services.daily_summary import SummaryService
 from services.notifications import NotificationService
 from services.tracker import GameTracker
+from services.quiz_service import QuizService
 from cogs.tracking import TrackingCog
 from cogs.admin import AdminCog
+from cogs.quiz import QuizCog
 from utils.helpers import infer_termination_from_fen
 
 # Setup logging
@@ -69,6 +71,7 @@ class ChessTrackerBot(commands.Bot):
         self.notification_service: NotificationService = None
         self.tracker: GameTracker = None
         self.summary_service: SummaryService = None
+        self.quiz_service: QuizService = None
 
     async def setup_hook(self):
         """Initialize services and load cogs."""
@@ -90,10 +93,12 @@ class ChessTrackerBot(commands.Bot):
         self.notification_service = NotificationService(self, self.db)
         self.tracker = GameTracker(self.db, self.notification_service)
         self.summary_service = SummaryService(self, self.db)
+        self.quiz_service = QuizService(self, self.db, self.tracker)
 
         # Add cogs
         await self.add_cog(TrackingCog(self, self.db, self.tracker))
         await self.add_cog(AdminCog(self, self.db, self.summary_service))
+        await self.add_cog(QuizCog(self, self.db, self.tracker, self.quiz_service))
         logger.info("Cogs loaded")
 
         # Sync commands globally
