@@ -386,8 +386,9 @@ class QuizService:
             if player.platform == "lichess":
                 return await self.tracker.lichess_client.get_game_pgn(game.game_id)
             else:
+                # Pass played_at to fetch the correct monthly archive
                 return await self.tracker.chesscom_client.get_game_pgn(
-                    player.username, game.game_id
+                    player.username, game.game_id, played_at=game.played_at
                 )
         except Exception as e:
             logger.error(f"Error fetching PGN for game {game.game_id}: {e}")

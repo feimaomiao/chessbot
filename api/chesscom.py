@@ -250,7 +250,9 @@ class ChessComClient(BaseChessClient):
         url = f"{self.base_url}/player/{username.lower()}/stats"
         return await self._get(url)
 
-    async def get_game_pgn(self, username: str, game_id: str) -> Optional[str]:
+    async def get_game_pgn(
+        self, username: str, game_id: str, played_at: Optional[datetime] = None
+    ) -> Optional[str]:
         """
         Fetch the PGN for a specific game.
 
@@ -260,20 +262,33 @@ class ChessComClient(BaseChessClient):
         Args:
             username: The player's username (needed to find the game)
             game_id: The Chess.com game UUID
+            played_at: If provided, directly fetch the archive for this month
 
         Returns:
             PGN string or None if not found
         """
         username = username.lower()
 
-        # Get archives list
+        # If we know when the game was played, fetch that specific archive
+        if played_at:
+            archive_url = (
+                f"{self.base_url}/player/{username}/games/"
+                f"{played_at.year}/{played_at.month:02d}"
+            )
+            data = await self._get(archive_url)
+            if data and "games" in data:
+                for game in data["games"]:
+                    if game.get("uuid") == game_id:
+                        return game.get("pgn")
+            return None
+
+        # Fallback: search recent archives (most recent first)
         archives_url = f"{self.base_url}/player/{username}/games/archives"
         archives_data = await self._get(archives_url)
 
         if not archives_data or "archives" not in archives_data:
             return None
 
-        # Search recent archives (most recent first)
         for archive_url in reversed(archives_data["archives"][-3:]):  # Last 3 months
             data = await self._get(archive_url)
             if not data or "games" not in data:
