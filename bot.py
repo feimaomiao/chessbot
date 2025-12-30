@@ -138,15 +138,6 @@ class ChessTrackerBot(commands.Bot):
         logger.info(f"Logged in as {self.user} (ID: {self.user.id})")
         logger.info(f"Connected to {len(self.guilds)} guild(s)")
 
-        # TODO: Remove this after running once - clears duplicate guild commands
-        for guild in self.guilds:
-            try:
-                self.tree.clear_commands(guild=guild)
-                await self.tree.sync(guild=guild)
-                logger.info(f"Cleared guild commands from: {guild.name}")
-            except Exception as e:
-                logger.error(f"Failed to clear commands from {guild.name}: {e}")
-
         # Start background services
         await self.tracker.start()
         await self.summary_service.start()
