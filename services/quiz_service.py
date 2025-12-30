@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Maximum number of game retries if no missed moves found
-MAX_GAME_RETRIES = 5
+MAX_GAME_RETRIES = 10
 
 
 def format_eval(centipawns: float) -> str:
