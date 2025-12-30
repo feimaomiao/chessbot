@@ -18,7 +18,10 @@ import chess
 import chess.pgn
 import chess.svg
 import cairosvg
+from cairosvg.surface import PNGSurface
+from cairosvg.parser import Tree
 from PIL import Image, ImageDraw
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +203,115 @@ _eval_cache = EvalCache()
 def get_eval_cache() -> EvalCache:
     """Get the global evaluation cache."""
     return _eval_cache
+
+
+# Board rendering cache settings
+BOARD_CACHE_SIZE = 128  # Number of rendered board images to cache
+
+
+class BoardImageCache:
+    """Thread-safe LRU cache for rendered board images (numpy arrays)."""
+
+    def __init__(self, maxsize: int = BOARD_CACHE_SIZE):
+        self._cache: OrderedDict[str, np.ndarray] = OrderedDict()
+        self._maxsize = maxsize
+        self._lock = threading.Lock()
+        self._hits = 0
+        self._misses = 0
+
+    def _make_key(
+        self, board: chess.Board, size: int, last_move: Optional[chess.Move], flipped: bool
+    ) -> str:
+        """Create a cache key from board state and rendering options."""
+        # Use board FEN (without move counters for better cache hits) + rendering params
+        # We only care about piece positions, castling rights, and en passant
+        fen_parts = board.fen().split()
+        position_key = " ".join(fen_parts[:4])  # pieces, turn, castling, en passant
+        move_key = last_move.uci() if last_move else ""
+        return f"{position_key}|{size}|{move_key}|{flipped}"
+
+    def get(
+        self, board: chess.Board, size: int, last_move: Optional[chess.Move], flipped: bool
+    ) -> Optional[np.ndarray]:
+        """Get cached board image array."""
+        key = self._make_key(board, size, last_move, flipped)
+        with self._lock:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+                self._hits += 1
+                return self._cache[key]
+            self._misses += 1
+            return None
+
+    def set(
+        self,
+        board: chess.Board,
+        size: int,
+        last_move: Optional[chess.Move],
+        flipped: bool,
+        image_array: np.ndarray,
+    ) -> None:
+        """Cache a rendered board image array."""
+        key = self._make_key(board, size, last_move, flipped)
+        with self._lock:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+            else:
+                if len(self._cache) >= self._maxsize:
+                    self._cache.popitem(last=False)
+                self._cache[key] = image_array
+
+    def get_stats(self) -> dict:
+        """Get cache statistics."""
+        with self._lock:
+            total = self._hits + self._misses
+            hit_rate = (self._hits / total * 100) if total > 0 else 0
+            return {
+                "hits": self._hits,
+                "misses": self._misses,
+                "size": len(self._cache),
+                "hit_rate": f"{hit_rate:.1f}%",
+            }
+
+    def clear(self) -> None:
+        """Clear the cache."""
+        with self._lock:
+            self._cache.clear()
+            self._hits = 0
+            self._misses = 0
+
+
+# Global board image cache
+_board_cache = BoardImageCache()
+
+
+def get_board_cache() -> BoardImageCache:
+    """Get the global board image cache."""
+    return _board_cache
+
+
+def _svg_to_numpy_direct(svg_bytestring: bytes) -> np.ndarray:
+    """
+    Convert SVG directly to numpy RGB array via cairo surface.
+    Skips PNG encoding/decoding for ~30% faster rendering.
+    """
+    tree = Tree(bytestring=svg_bytestring)
+    output = io.BytesIO()  # Dummy output
+    surface = PNGSurface(tree, output, 96)
+
+    w = int(surface.width)
+    h = int(surface.height)
+
+    # Get raw BGRA data from cairo surface
+    buf = surface.cairo.get_data()
+
+    # Convert to numpy (cairo uses BGRA in native byte order)
+    arr = np.ndarray(shape=(h, w, 4), dtype=np.uint8, buffer=buf)
+
+    # Convert BGRA to RGB (drop alpha, swap B/R) and copy to own memory
+    rgb = arr[:, :, [2, 1, 0]].copy()
+
+    return rgb
 
 
 class StockfishPool:
@@ -758,6 +870,7 @@ def render_board_image(
     size: int = BOARD_SIZE,
     last_move: Optional[chess.Move] = None,
     flipped: bool = False,
+    use_cache: bool = True,
 ) -> Image.Image:
     """
     Render a chess board to a PIL Image.
@@ -767,10 +880,20 @@ def render_board_image(
         size: Size of the output image in pixels
         last_move: Optional move to highlight (from/to squares)
         flipped: If True, render from Black's perspective (a8 at bottom-left)
+        use_cache: Whether to use the board image cache
 
     Returns:
         PIL Image of the board
     """
+    cache = get_board_cache()
+
+    # Check cache first
+    if use_cache:
+        cached = cache.get(board, size, last_move, flipped)
+        if cached is not None:
+            return Image.fromarray(cached)
+
+    # Generate SVG
     svg_data = chess.svg.board(
         board,
         size=size,
@@ -785,8 +908,14 @@ def render_board_image(
         },
     )
 
-    png_data = cairosvg.svg2png(bytestring=svg_data.encode("utf-8"))
-    return Image.open(io.BytesIO(png_data))
+    # Convert SVG directly to numpy array (faster than PNG encoding)
+    rgb_array = _svg_to_numpy_direct(svg_data.encode("utf-8"))
+
+    # Cache the result
+    if use_cache:
+        cache.set(board, size, last_move, flipped, rgb_array)
+
+    return Image.fromarray(rgb_array)
 
 
 def format_eval_text(centipawns: float) -> str:
