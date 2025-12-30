@@ -15,9 +15,16 @@ import sys
 import discord
 from discord.ext import commands
 
-from config import DATABASE_PATH, DISCORD_TOKEN, EVAL_CACHE_PATH, LOG_LEVEL
+from config import (
+    DATABASE_PATH,
+    DISCORD_TOKEN,
+    EVAL_CACHE_PATH,
+    LOG_LEVEL,
+    STOCKFISH_DEPTH,
+    QUIZ_STOCKFISH_DEPTH,
+)
 from database import DatabaseManager
-from utils.video import get_eval_cache
+from utils.video import get_eval_cache, get_stockfish_evaluator
 from services.daily_summary import SummaryService
 from services.notifications import NotificationService
 from services.tracker import GameTracker
@@ -144,13 +151,22 @@ class ChessTrackerBot(commands.Bot):
         await self.tracker.start()
         await self.summary_service.start()
 
-        # Set presence
+        # Set presence with Stockfish version
+        stockfish_version = "unknown"
+        evaluator = get_stockfish_evaluator()
+        if evaluator.available and evaluator.engine:
+            try:
+                sf_info = evaluator.engine.get_stockfish_major_version()
+                stockfish_version = str(sf_info) if sf_info else "unknown"
+            except Exception:
+                stockfish_version = "unknown"
+
+        status_text = f"Big fan of Stockfish {stockfish_version} with depth({STOCKFISH_DEPTH},{QUIZ_STOCKFISH_DEPTH})"
         await self.change_presence(
-            activity=discord.Activity(
-                type=discord.ActivityType.watching,
-                name="chess games",
-            )
+            activity=discord.CustomActivity(name=status_text),
+            status=discord.Status.online,
         )
+        logger.info(f"Set status: {status_text}")
 
         logger.info("Bot is ready!")
 
