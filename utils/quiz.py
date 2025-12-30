@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 # 300+ centipawns is typically considered a blunder in chess
 DEFAULT_MIN_EVAL_LOSS = 300
 
+# Maximum evaluation deficit before the blunder to include in quizzes
+# If player was already losing by more than this, skip the position
+# (no point quizzing on a blunder when already down 5+ pawns)
+DEFAULT_MAX_LOSING_EVAL = 500
+
 
 @dataclass
 class MissedMove:
@@ -146,6 +151,7 @@ def find_missed_moves_parallel(
     pgn: str,
     player_color: str,
     min_eval_loss: float = DEFAULT_MIN_EVAL_LOSS,
+    max_losing_eval: float = DEFAULT_MAX_LOSING_EVAL,
 ) -> list[MissedMove]:
     """
     Analyze a game using parallel Stockfish instances.
@@ -154,6 +160,7 @@ def find_missed_moves_parallel(
         pgn: PGN string of the game
         player_color: "white" or "black" - which player to analyze
         min_eval_loss: Minimum centipawn loss to consider a move as "missed"
+        max_losing_eval: Skip positions where player was already losing by more than this
 
     Returns:
         List of MissedMove objects representing positions where the player
@@ -231,6 +238,13 @@ def find_missed_moves_parallel(
         if best_move_uci is None:
             continue
 
+        # Skip positions where player was already losing badly
+        # (no point quizzing on a blunder when already in a hopeless position)
+        if is_white and eval_before < -max_losing_eval:
+            continue
+        if not is_white and eval_before > max_losing_eval:
+            continue
+
         best_move = chess.Move.from_uci(best_move_uci)
 
         # Calculate loss from player's perspective
@@ -264,6 +278,7 @@ async def find_missed_moves_async(
     pgn: str,
     player_color: str,
     min_eval_loss: float = DEFAULT_MIN_EVAL_LOSS,
+    max_losing_eval: float = DEFAULT_MAX_LOSING_EVAL,
 ) -> list[MissedMove]:
     """
     Async wrapper for find_missed_moves_parallel that runs in a thread pool.
@@ -271,7 +286,9 @@ async def find_missed_moves_async(
     This prevents blocking the Discord event loop during Stockfish analysis.
     """
     loop = asyncio.get_event_loop()
-    func = partial(find_missed_moves_parallel, pgn, player_color, min_eval_loss)
+    func = partial(
+        find_missed_moves_parallel, pgn, player_color, min_eval_loss, max_losing_eval
+    )
     return await loop.run_in_executor(None, func)
 
 
