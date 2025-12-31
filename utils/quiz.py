@@ -477,3 +477,104 @@ def classify_difficulty(eval_loss: float) -> str:
         return "medium"  # Clear blunder
     else:
         return "hard"  # Trickier to spot the best move
+
+
+@dataclass
+class ContinuationMove:
+    """Represents a continuation move with its evaluation."""
+
+    move_san: str  # SAN notation of the move
+    eval_centipawns: float  # Evaluation in centipawns from white's perspective
+
+
+def get_continuation_moves(
+    fen: str,
+    num_moves: int = 3,
+) -> list[ContinuationMove]:
+    """
+    Get the best continuation moves from a position.
+
+    Args:
+        fen: FEN string of the position to analyze
+        num_moves: Number of top moves to return
+
+    Returns:
+        List of ContinuationMove objects with move and evaluation
+    """
+    pool = get_quiz_stockfish_pool()
+    if not pool.available:
+        logger.warning("Stockfish pool not available for continuation analysis")
+        return []
+
+    engine = None
+    try:
+        engine = pool.acquire(timeout=30.0)
+        engine.set_fen_position(fen)
+
+        # Get top moves with evaluations
+        top_moves = engine.get_top_moves(num_moves)
+
+        if not top_moves:
+            return []
+
+        board = chess.Board(fen)
+        continuations = []
+
+        for move_data in top_moves:
+            move_uci = move_data.get("Move")
+            if not move_uci:
+                continue
+
+            # Convert UCI to SAN
+            try:
+                move = chess.Move.from_uci(move_uci)
+                move_san = board.san(move)
+            except (ValueError, chess.InvalidMoveError):
+                continue
+
+            # Get evaluation
+            centipawn = move_data.get("Centipawn")
+            mate = move_data.get("Mate")
+
+            if mate is not None:
+                # Convert mate to centipawns (high value)
+                eval_cp = 10000 - abs(mate) if mate > 0 else -10000 + abs(mate)
+            elif centipawn is not None:
+                eval_cp = float(centipawn)
+            else:
+                continue
+
+            # Adjust for side to move if needed
+            if not pool.turn_perspective_supported and board.turn == chess.BLACK:
+                eval_cp = -eval_cp
+
+            continuations.append(ContinuationMove(
+                move_san=move_san,
+                eval_centipawns=eval_cp,
+            ))
+
+        return continuations
+
+    except TimeoutError:
+        logger.warning("Timeout acquiring engine for continuation analysis")
+        return []
+    except Exception as e:
+        logger.error(f"Error getting continuation moves: {e}")
+        return []
+    finally:
+        if engine is not None:
+            pool.release(engine)
+
+
+async def get_continuation_moves_async(
+    fen: str,
+    num_moves: int = 3,
+) -> list[ContinuationMove]:
+    """
+    Async wrapper for get_continuation_moves.
+
+    This prevents blocking the Discord event loop during Stockfish analysis.
+    """
+    loop = asyncio.get_event_loop()
+    func = partial(get_continuation_moves, fen, num_moves)
+    return await loop.run_in_executor(None, func)

@@ -11,7 +11,12 @@ import discord
 from database import DatabaseManager, ActiveQuiz
 from utils.board import get_board_discord_file
 from utils.notation import parse_user_move
-from utils.quiz import find_missed_moves_async, select_quiz_position, classify_difficulty
+from utils.quiz import (
+    find_missed_moves_async,
+    select_quiz_position,
+    classify_difficulty,
+    get_continuation_moves_async,
+)
 
 if TYPE_CHECKING:
     from services.tracker import GameTracker
@@ -387,6 +392,23 @@ class QuizService:
             value=f"```{played_move_eval}```",
             inline=False,
         )
+
+        # Get continuation moves after the best move
+        board.push_san(quiz.correct_move_san)
+        continuations = await get_continuation_moves_async(board.fen(), num_moves=3)
+
+        if continuations:
+            continuation_lines = []
+            for cont in continuations:
+                eval_str = format_eval(cont.eval_centipawns)
+                continuation_lines.append(f"{cont.move_san}: {eval_str}")
+            continuation_text = "\n".join(continuation_lines)
+
+            embed.add_field(
+                name="Best Continuations",
+                value=f"```{continuation_text}```",
+                inline=False,
+            )
 
         embed.add_field(
             name="Game",

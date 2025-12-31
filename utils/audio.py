@@ -60,25 +60,51 @@ def generate_capture_sound(sample_rate: int = 44100) -> bytes:
     return tone1 + tone2
 
 
+def generate_check_sound(sample_rate: int = 44100) -> bytes:
+    """Generate a sharp, rising sound for checks."""
+    # Sharp ascending tones to indicate danger
+    tone1 = generate_tone(600, 30, sample_rate, 0.35)
+    tone2 = generate_tone(900, 40, sample_rate, 0.4)
+    tone3 = generate_tone(1100, 30, sample_rate, 0.3)
+    return tone1 + tone2 + tone3
+
+
+def generate_checkmate_sound(sample_rate: int = 44100) -> bytes:
+    """Generate a dramatic, final sound for checkmate."""
+    # Deep, dramatic tones followed by a triumphant flourish
+    tone1 = generate_tone(200, 60, sample_rate, 0.5)
+    tone2 = generate_tone(300, 50, sample_rate, 0.45)
+    tone3 = generate_tone(400, 40, sample_rate, 0.4)
+    tone4 = generate_tone(600, 80, sample_rate, 0.5)
+    return tone1 + tone2 + tone3 + tone4
+
+
 def generate_audio_track(
-    moves_data: list[tuple[bool, int]],  # List of (is_capture, position_index)
+    moves_data: list[tuple[str, int]],  # List of (move_type, position_index)
     frame_duration_ms: int = 1000,
     sample_rate: int = 44100,
+    audio_offset_ms: int = -50,  # Negative = sound plays earlier
 ) -> bytes:
     """
     Generate a complete audio track for a chess game.
 
     Args:
-        moves_data: List of tuples (is_capture, position_index)
+        moves_data: List of tuples (move_type, position_index)
+                   where move_type is "move", "capture", "check", or "checkmate"
         frame_duration_ms: Duration of each frame in milliseconds
         sample_rate: Audio sample rate
+        audio_offset_ms: Offset for audio timing (negative = earlier, positive = later)
 
     Returns:
         Raw PCM audio bytes for the entire track
     """
     # Pre-generate sounds
-    move_sound = generate_move_sound(sample_rate)
-    capture_sound = generate_capture_sound(sample_rate)
+    sounds = {
+        "move": generate_move_sound(sample_rate),
+        "capture": generate_capture_sound(sample_rate),
+        "check": generate_check_sound(sample_rate),
+        "checkmate": generate_checkmate_sound(sample_rate),
+    }
 
     # Calculate total duration
     total_frames = len(moves_data) + 1  # +1 for initial position
@@ -88,11 +114,12 @@ def generate_audio_track(
     audio_buffer = bytearray(total_samples * 2)  # 2 bytes per sample (16-bit)
 
     # Place sounds at appropriate positions
-    for is_capture, position_idx in moves_data:
-        # Sound should play at the start of this position's frame
-        start_sample = int(sample_rate * position_idx * frame_duration_ms / 1000)
+    for move_type, position_idx in moves_data:
+        # Sound should play slightly before the frame appears for better perceived sync
+        frame_time_ms = position_idx * frame_duration_ms + audio_offset_ms
+        start_sample = max(0, int(sample_rate * frame_time_ms / 1000))
 
-        sound = capture_sound if is_capture else move_sound
+        sound = sounds.get(move_type, sounds["move"])
         sound_samples = len(sound) // 2
 
         # Mix sound into buffer
@@ -152,15 +179,16 @@ def create_wav_file(pcm_data: bytes, sample_rate: int = 44100) -> bytes:
 
 def add_audio_to_video(
     video_bytes: bytes,
-    moves_data: list[tuple[bool, int]],
+    moves_data: list[tuple[str, int]],
     frame_duration_ms: int = 1000,
 ) -> Optional[bytes]:
     """
-    Add move/capture sounds to a video.
+    Add move/capture/check/checkmate sounds to a video.
 
     Args:
         video_bytes: Original video as bytes
-        moves_data: List of tuples (is_capture, position_index)
+        moves_data: List of tuples (move_type, position_index)
+                   where move_type is "move", "capture", "check", or "checkmate"
         frame_duration_ms: Duration of each frame in milliseconds
 
     Returns:

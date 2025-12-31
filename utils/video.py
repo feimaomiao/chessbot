@@ -1170,14 +1170,15 @@ def parse_pgn_positions(pgn_str: str) -> list[tuple[chess.Board, chess.Move | No
         return []
 
 
-def parse_pgn_with_captures(pgn_str: str) -> tuple[list[tuple[chess.Board, chess.Move | None]], list[tuple[bool, int]]]:
+def parse_pgn_with_captures(pgn_str: str) -> tuple[list[tuple[chess.Board, chess.Move | None]], list[tuple[str, int]]]:
     """
-    Parse a PGN string and return positions along with capture info for audio.
+    Parse a PGN string and return positions along with move type info for audio.
 
     Returns:
         Tuple of:
         - List of (board, move) tuples
-        - List of (is_capture, position_index) for audio generation
+        - List of (move_type, position_index) for audio generation
+          where move_type is one of: "move", "capture", "check", "checkmate"
     """
     if not pgn_str:
         return [], []
@@ -1196,10 +1197,22 @@ def parse_pgn_with_captures(pgn_str: str) -> tuple[list[tuple[chess.Board, chess
 
         # Add each position after a move
         for idx, move in enumerate(pgn.mainline_moves(), start=1):
+            # Check for capture before pushing the move
             is_capture = board.is_capture(move)
             board.push(move)
             positions.append((board.copy(), move))
-            moves_data.append((is_capture, idx))
+
+            # Determine move type (priority: checkmate > check > capture > move)
+            if board.is_checkmate():
+                move_type = "checkmate"
+            elif board.is_check():
+                move_type = "check"
+            elif is_capture:
+                move_type = "capture"
+            else:
+                move_type = "move"
+
+            moves_data.append((move_type, idx))
 
         return positions, moves_data
 
