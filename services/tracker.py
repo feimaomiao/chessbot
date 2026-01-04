@@ -26,7 +26,6 @@ class GameTracker:
         self.lichess_client = LichessClient()
         self._running = False
         self._task: asyncio.Task = None
-        self._is_initial_poll = True  # First poll after restart
 
     async def start(self):
         """Start the tracking loop."""
@@ -54,16 +53,9 @@ class GameTracker:
         """Main tracking loop."""
         while self._running:
             try:
-                if self._is_initial_poll:
-                    logger.info("Starting initial poll after restart...")
-                else:
-                    logger.debug("Starting poll cycle...")
+                logger.debug("Starting poll cycle...")
                 await self._poll_all_players()
-                if self._is_initial_poll:
-                    logger.info("Initial poll complete, switching to normal mode")
-                    self._is_initial_poll = False
-                else:
-                    logger.debug("Poll cycle complete")
+                logger.debug("Poll cycle complete")
                 # Save evaluation cache if modified
                 get_eval_cache().save_if_dirty()
             except Exception as e:
@@ -170,12 +162,9 @@ class GameTracker:
             games = sorted(games, key=lambda g: g.played_at)
 
             # Process each game for all trackers of this user
-            # On initial poll after restart, only the most recent game gets notification/video
-            for i, game_data in enumerate(games):
-                is_most_recent = (i == len(games) - 1)
-                send_notification = is_most_recent if self._is_initial_poll else True
+            for game_data in games:
                 for player in players:
-                    await self._process_game(player, game_data, send_notification=send_notification)
+                    await self._process_game(player, game_data)
 
             return len(games)
 
@@ -216,7 +205,7 @@ class GameTracker:
         Args:
             player: The tracked player
             game_data: Game data from the API
-            send_notification: If False, analyze for accuracy but skip video generation and notification
+            send_notification: If False, skip video generation and notification (used for backfilling)
         """
         # Check if game already exists
         if await self.db.game_exists(player.id, game_data.game_id):
